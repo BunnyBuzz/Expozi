@@ -95,4 +95,4 @@ Electron · TypeScript · node-llama-cpp · Transformers.js · hnswlib-node · b
 
 ## License
 
-Apache 2.0
+MIT
