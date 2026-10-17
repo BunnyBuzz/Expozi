@@ -13,4 +13,9 @@ export interface Paper {
   doi?: string | null;
   url?: string;
   provenance?: string;
+  studyType?: string | null;
+  quality?: number | null;
+  retracted?: boolean;
+  suggested?: string | null;
+  suggestReason?: string | null;
 }

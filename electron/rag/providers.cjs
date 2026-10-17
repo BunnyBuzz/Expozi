@@ -1,30 +1,10 @@
 async function testProvider(id, { key, baseURL, model }) {
   try {
     switch (id) {
-      case "semantic-scholar": {
-        if (!key) return { ok: false, message: "No key saved" };
-        const res = await fetch(
-          "https://api.semanticscholar.org/graph/v1/paper/search?query=test&limit=1&fields=title",
-          { headers: { Accept: "application/json", "x-api-key": key } },
-        );
-        if (res.status === 200) return { ok: true, message: "Key accepted — higher rate limits active" };
-        if (res.status === 429) return { ok: false, message: "Key not applied (still rate limited)" };
-        return { ok: false, message: `Rejected (HTTP ${res.status})` };
-      }
       case "jina": {
         if (!key) return { ok: false, message: "No key saved" };
         const res = await fetch("https://api.jina.ai/http://example.com", {
           headers: { Authorization: `Bearer ${key}` },
-        });
-        if (res.status === 200) return { ok: true, message: "Key accepted" };
-        return { ok: false, message: `Rejected (HTTP ${res.status})` };
-      }
-      case "exa": {
-        if (!key) return { ok: false, message: "No key saved" };
-        const res = await fetch("https://api.exa.ai/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-api-key": key },
-          body: JSON.stringify({ query: "test", contentsLimit: 1 }),
         });
         if (res.status === 200) return { ok: true, message: "Key accepted" };
         return { ok: false, message: `Rejected (HTTP ${res.status})` };
@@ -87,9 +67,7 @@ async function testProvider(id, { key, baseURL, model }) {
 }
 
 const PROVIDERS = [
-  { id: "semantic-scholar", label: "Semantic Scholar", kind: "search", needsKey: true },
   { id: "jina", label: "Jina reader", kind: "fetch", needsKey: true },
-  { id: "exa", label: "Exa search", kind: "search", needsKey: true },
   { id: "tavily", label: "Tavily search", kind: "search", needsKey: true },
   { id: "openai", label: "OpenAI", kind: "chat", needsKey: true, defaultModel: "gpt-4o-mini" },
   { id: "openrouter", label: "OpenRouter", kind: "chat", needsKey: true, defaultModel: "openai/gpt-4o-mini" },

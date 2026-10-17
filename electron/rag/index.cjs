@@ -1,9 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 const { ragDirs, ensureDirs } = require("./paths.cjs");
-const { openDb } = require("./db.cjs");
+const { openDb, run: dbRun, all: dbAll } = require("./db.cjs");
 const { scanModels, loadModelFile, promptStream } = require("./llm.cjs");
-const { loadEmbeddingModel, hasEmbedding } = require("./embed.cjs");
+const { loadEmbeddingModel, onnxAvailable, setCacheDir, error: embedBackendError } = require("./embed.cjs");
 const { downloadModel, downloadModelFile, cancelDownload, MODELS, MODEL_NAME } = require("./download.cjs");
 const { runResearch: runResearchPipeline } = require("./pipeline.cjs");
 const { chatComplete } = require("./backends.cjs");
@@ -18,6 +18,7 @@ const state = {
   error: null,
   embedding: "missing",
   embedFile: null,
+  embedKind: null,
 };
 
 let dirs = null;
@@ -44,7 +45,12 @@ async function refreshModels() {
   state.modelFile = chat || null;
   state.embedFile = embedding || null;
   state.llm = chat ? "available" : "missing";
-  state.embedding = embedding ? "available" : "missing";
+  // The fast ONNX embedder needs no user file (the model downloads on first
+  // use); a GGUF embedding model is the fallback when ONNX cannot load.
+  if (state.embedding !== "ready") {
+    state.embedKind = onnxAvailable() ? "onnx" : embedding ? "gguf" : null;
+    state.embedding = state.embedKind ? "available" : "missing";
+  }
 }
 
 function pushStatus(send) {
@@ -81,13 +87,28 @@ async function ensureLlm(send) {
   }
 }
 
-// Load the local embedding model on first use, when one is installed.
-async function ensureEmbedding(send) {
+// Load the local embedder on first use. Prefers the fast ONNX model
+// (multilingual-e5-small), which needs no user file (the weights download on
+// first use); a GGUF embedding model is the fallback when ONNX cannot load.
+async function ensureEmbedding(send, onStage) {
   if (state.embedding === "ready") return true;
-  if (!state.embedFile || !fs.existsSync(state.embedFile)) return false;
+  if (!state.embedKind) return false;
   state.embedding = "loading";
+  pushStatus(send);
   try {
-    await loadEmbeddingModel(state.embedFile);
+    let lastPct = -10;
+    const kind = await loadEmbeddingModel(state.embedFile, {
+      onProgress: (p) => {
+        if (!onStage || !p || p.status !== "progress" || !p.total) return;
+        if (!/\.onnx$/i.test(p.file || "")) return;
+        // One stage line per 10% — the download fires a callback per chunk.
+        const pct = Math.floor((p.loaded / p.total) * 100);
+        if (pct < lastPct + 10 && pct !== 100) return;
+        lastPct = pct;
+        onStage("embed", `Preparing the embedding model… ${pct}%`);
+      },
+    });
+    state.embedKind = kind;
     state.embedding = "ready";
     pushStatus(send);
     return true;
@@ -101,6 +122,8 @@ async function ensureEmbedding(send) {
 async function initRag(app) {
   dirs = ragDirs(app);
   ensureDirs(fs, dirs);
+  // ONNX model files (multilingual-e5-small) live next to the GGUF models the user manages.
+  setCacheDir(path.join(dirs.models, "onnx"));
   try {
     await openDb(dirs.dbFile);
   } catch (e) {
@@ -181,7 +204,161 @@ function getStatus() {
     embedding: state.embedding,
     embedFile: state.embedFile || null,
     embedModelName: MODELS.embedding.name,
+    embedKind: state.embedKind,
+    embedError: state.embedding === "error" ? embedBackendError() : null,
   };
+}
+
+// --- screening workspace (stage 3) -----------------------------------------
+// Decisions and notes are stored per (session, url). The screen_sources tool
+// persists its proposals into the same row; a user decision never overwrites
+// the proposal and vice versa.
+const DECISIONS = new Set(["include", "exclude", "maybe"]);
+
+function setScreening({ sessionId, url, decision, note } = {}) {
+  if (!sessionId || !url) return { saved: false, error: "sessionId and url required" };
+  const d = decision ? String(decision) : null;
+  if (d && !DECISIONS.has(d)) return { saved: false, error: `unknown decision: ${d}` };
+  try {
+    dbRun(
+      "INSERT INTO screening (session_id, url, decision, note, updated_at) VALUES (?,?,?,?,datetime('now')) " +
+        "ON CONFLICT(session_id, url) DO UPDATE SET decision=excluded.decision, note=excluded.note, updated_at=excluded.updated_at",
+      [sessionId, url, d, note != null ? String(note) : null],
+    );
+    return { saved: true };
+  } catch (e) {
+    return { saved: false, error: String((e && e.message) || e) };
+  }
+}
+
+function listScreening(sessionId) {
+  try {
+    return dbAll("SELECT url, decision, note, suggested, reason FROM screening WHERE session_id=? ORDER BY id", [sessionId]);
+  } catch {
+    return [];
+  }
+}
+
+// Reopen a saved session (Recents) — sources + screening state, no re-run.
+// Source rows are read in the order screen_sources proposed them (the live
+// display order); rows persisted before the per-session migration fall back to
+// the same URL from any session, and unscreened extras follow at the end.
+const SOURCE_COLS = "title, url, authors, year, journal, doi, citations, source_type, abstract, study_type, quality, retracted";
+
+function mapSourceRow(r) {
+  return {
+    id: r.url,
+    title: r.title || "Untitled source",
+    authors: String(r.authors || "").split("; ").filter(Boolean),
+    year: r.year ?? null,
+    journal: r.journal || "",
+    doi: r.doi || null,
+    citations: r.citations || 0,
+    url: r.url,
+    provenance: r.source_type || "web",
+    abstract: r.abstract || "",
+    studyType: r.study_type ?? null,
+    quality: r.quality ?? null,
+    retracted: !!r.retracted,
+  };
+}
+
+function loadSession(sessionId) {
+  try {
+    const s = dbAll("SELECT id, query, mode FROM sessions WHERE id=?", [sessionId])[0];
+    if (!s) return null;
+    const screening = listScreening(sessionId);
+    const rows = [];
+    const seen = new Set();
+    for (const scr of screening) {
+      if (!scr.url || seen.has(scr.url)) continue;
+      const src =
+        dbAll(`SELECT ${SOURCE_COLS} FROM sources WHERE session_id=? AND url=?`, [sessionId, scr.url])[0] ||
+        dbAll(`SELECT ${SOURCE_COLS} FROM sources WHERE url=? LIMIT 1`, [scr.url])[0];
+      if (src) {
+        seen.add(scr.url);
+        rows.push(src);
+      }
+    }
+    for (const src of dbAll(`SELECT ${SOURCE_COLS} FROM sources WHERE session_id=? ORDER BY id`, [sessionId])) {
+      if (src.url && !seen.has(src.url)) {
+        seen.add(src.url);
+        rows.push(src);
+      }
+    }
+    return {
+      id: s.id,
+      query: s.query,
+      mode: s.mode,
+      sources: rows.map(mapSourceRow),
+      screening,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// --- history + library (stage 4) --------------------------------------------
+// Recents reads the sessions the pipeline wrote; the library stores starred
+// sources with the same badge fields the live view shows.
+
+function listSessions(limit = 30) {
+  try {
+    return dbAll(
+      "SELECT id, query, mode, created_at FROM sessions WHERE query IS NOT NULL AND query != '' ORDER BY created_at DESC, rowid DESC LIMIT ?",
+      [Number(limit) || 30],
+    );
+  } catch {
+    return [];
+  }
+}
+
+function libraryList() {
+  try {
+    return dbAll(
+      "SELECT title, url, authors, year, journal, citation_count, abstract, doi, source_type, study_type, quality, retracted FROM library ORDER BY saved_at DESC, rowid DESC",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function libraryAdd(p = {}) {
+  if (!p.url) return { saved: false, error: "url required" };
+  try {
+    dbRun(
+      "INSERT INTO library (title, url, authors, year, journal, citation_count, abstract, doi, source_type, study_type, quality, retracted) " +
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) " +
+        "ON CONFLICT(url) DO UPDATE SET title=excluded.title, authors=excluded.authors, year=excluded.year, journal=excluded.journal, citation_count=excluded.citation_count, abstract=excluded.abstract, doi=excluded.doi, source_type=excluded.source_type, study_type=excluded.study_type, quality=excluded.quality, retracted=excluded.retracted",
+      [
+        p.title || "Untitled source",
+        p.url,
+        p.authors || "",
+        p.year ?? null,
+        p.journal || "",
+        p.citations || 0,
+        p.abstract || "",
+        p.doi || null,
+        p.source_type || null,
+        p.study_type || null,
+        typeof p.quality === "number" ? p.quality : null,
+        p.retracted ? 1 : 0,
+      ],
+    );
+    return { saved: true };
+  } catch (e) {
+    return { saved: false, error: String((e && e.message) || e) };
+  }
+}
+
+function libraryRemove(url) {
+  if (!url) return { saved: false, error: "url required" };
+  try {
+    dbRun("DELETE FROM library WHERE url=?", [url]);
+    return { saved: true };
+  } catch (e) {
+    return { saved: false, error: String((e && e.message) || e) };
+  }
 }
 
 async function startDownload(send, which = "chat") {
@@ -273,11 +450,11 @@ function stopPrompt() {
   }
 }
 
-async function runResearch({ query, mode, maxTokens, onStage, onToken, send }) {
+async function runResearch({ query, mode, maxTokens, onStage, onToken, onTool, send }) {
   researchAborter = new AbortController();
   const cfg = getBackend();
   const depth = effectiveDepth(cfg);
-  const keys = { s2: getKey("semantic-scholar"), jina: getKey("jina") };
+  const keys = { jina: getKey("jina") };
   const useLocalLlm = !cfg.backend || cfg.backend === "local";
 
   if (useLocalLlm) {
@@ -290,9 +467,16 @@ async function runResearch({ query, mode, maxTokens, onStage, onToken, send }) {
       );
     }
   }
-  if ((cfg.embedBackend || "local") === "local" && state.embedding !== "ready" && state.embedFile) {
-    if (onStage) onStage("embed", "Loading the local embedding model…");
-    await ensureEmbedding(send);
+  if ((cfg.embedBackend || "local") === "local" && state.embedding !== "ready" && state.embedKind) {
+    if (onStage) {
+      onStage(
+        "embed",
+        state.embedKind === "onnx"
+          ? "Preparing the fast embedding model…"
+          : "Loading the local embedding model…",
+      );
+    }
+    await ensureEmbedding(send, onStage);
   }
 
   const promptFn = (messages, mt, tk) => {
@@ -319,6 +503,7 @@ async function runResearch({ query, mode, maxTokens, onStage, onToken, send }) {
       signal: researchAborter.signal,
       onStage,
       onToken,
+      onTool,
       maxTokens: maxTokens || 500,
       keys,
       depth,
@@ -354,4 +539,11 @@ module.exports = {
   setBackend,
   listKeys,
   testKeyP,
+  setScreening,
+  listScreening,
+  loadSession,
+  listSessions,
+  libraryList,
+  libraryAdd,
+  libraryRemove,
 };

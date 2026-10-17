@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld("expozi", {
   platform: process.platform,
   version: "0.1.0",
   openDevTools: () => ipcRenderer.send("expozi:open-devtools"),
+  exportReport: (payload) => ipcRenderer.invoke("expozi:export-report", payload),
+  readerStatus: () => ipcRenderer.invoke("expozi:reader-status"),
   rag: {
     getStatus: () => ipcRenderer.invoke("rag:get-status"),
     downloadModel: (which) => ipcRenderer.invoke("rag:download-model", { which: which || "chat" }),
@@ -16,6 +18,14 @@ contextBridge.exposeInMainWorld("expozi", {
     stopPrompt: () => ipcRenderer.invoke("rag:stop-prompt"),
     research: (query, mode, maxTokens) => ipcRenderer.invoke("rag:research", { query, mode, maxTokens }),
     stopResearch: () => ipcRenderer.invoke("rag:stop-research"),
+    setScreening: (sessionId, url, decision, note) =>
+      ipcRenderer.invoke("rag:screening-set", { sessionId, url, decision, note }),
+    listScreening: (sessionId) => ipcRenderer.invoke("rag:screening-list", { sessionId }),
+    loadSession: (sessionId) => ipcRenderer.invoke("rag:session-load", { sessionId }),
+    listSessions: (limit) => ipcRenderer.invoke("rag:sessions-list", { limit }),
+    libraryList: () => ipcRenderer.invoke("rag:library-list"),
+    libraryAdd: (paper) => ipcRenderer.invoke("rag:library-add", paper),
+    libraryRemove: (url) => ipcRenderer.invoke("rag:library-remove", { url }),
     setKey: (provider, key) => ipcRenderer.invoke("rag:set-key", { provider, key }),
     getKeys: () => ipcRenderer.invoke("rag:get-keys"),
     deleteKey: (provider) => ipcRenderer.invoke("rag:delete-key", { provider }),
@@ -46,6 +56,11 @@ contextBridge.exposeInMainWorld("expozi", {
       const l = (_e, d) => cb(d);
       ipcRenderer.on("rag:download-progress", l);
       return () => ipcRenderer.removeListener("rag:download-progress", l);
+    },
+    onTool: (cb) => {
+      const l = (_e, d) => cb(d);
+      ipcRenderer.on("rag:tool", l);
+      return () => ipcRenderer.removeListener("rag:tool", l);
     },
   },
 });

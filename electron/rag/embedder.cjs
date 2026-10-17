@@ -37,16 +37,31 @@ function cacheGet(hash) {
  * Create an embedder that resolves vectors from (in order):
  *   1. the persistent cache (per model + content hash),
  *   2. the configured API provider (when embeddings are set to "api"),
- *   3. the local GGUF embedding model (fallback).
+ *   3. the local embedder — fast ONNX (multilingual-e5-small) by default, GGUF as fallback.
  * Vectors are cached under the model that actually produced them, so local
  * and API vectors (different dimensions) never mix.
  */
-async function createEmbedder({ onProgress } = {}) {
+async function createEmbedder({ onProgress, shouldStop } = {}) {
+  const stopped = () => {
+    if (shouldStop && shouldStop()) {
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      throw e;
+    }
+  };
   const cfg = embedConfig();
   const localReady = local.hasEmbedding();
   const useApi = cfg.canApi;
   if (!useApi && !localReady) {
-    return { available: false, source: "none", embed: async (texts) => new Array(texts.length).fill(null) };
+    return {
+      available: false,
+      source: "none",
+      localKind: null,
+      localModelLabel: null,
+      embed: async (texts) => new Array(texts.length).fill(null),
+      embedQuery: async (texts) => new Array(texts.length).fill(null),
+      embedPassages: async (texts) => new Array(texts.length).fill(null),
+    };
   }
 
   const apiModel = cfg.model || DEFAULT_EMBED_MODEL[cfg.chatBackend] || "";
@@ -55,6 +70,7 @@ async function createEmbedder({ onProgress } = {}) {
   let source = useApi && localReady ? "api" : useApi ? "api" : "local";
 
   async function embed(texts) {
+    stopped();
     const out = new Array(texts.length).fill(null);
     const misses = [];
     texts.forEach((t, i) => {
@@ -72,6 +88,7 @@ async function createEmbedder({ onProgress } = {}) {
       try {
         vecs = [];
         for (let s = 0; s < misses.length; s += API_BATCH) {
+          stopped();
           const batch = misses.slice(s, s + API_BATCH);
           const got = await embedComplete({
             backend: cfg.chatBackend,
@@ -83,7 +100,8 @@ async function createEmbedder({ onProgress } = {}) {
           vecs.push(...got);
         }
         used = "api";
-      } catch {
+      } catch (e) {
+        if (e && e.name === "AbortError") throw e;
         vecs = null;
         if (onProgress) onProgress(0, misses.length, "API embeddings unavailable — using the local model…");
       }
@@ -91,13 +109,16 @@ async function createEmbedder({ onProgress } = {}) {
 
     if (!vecs) {
       if (!localId) return out;
-      vecs = [];
       used = "local";
-      for (let k = 0; k < misses.length; k++) {
-        const v = (await local.embedTexts([misses[k].t]))[0];
-        vecs.push(v);
-        if (onProgress) onProgress(k + 1, misses.length);
-      }
+      vecs = await local.embedTexts(
+        misses.map((m) => String(m.t).slice(0, MAX_CHARS)),
+        {
+          shouldStop,
+          onProgress: (done, total) => {
+            if (onProgress) onProgress(done, total);
+          },
+        },
+      );
     } else if (onProgress) {
       onProgress(misses.length, misses.length);
     }
@@ -120,10 +141,28 @@ async function createEmbedder({ onProgress } = {}) {
     return out;
   }
 
+  // Queries and passages: when the local tier produces the vectors, embed
+  // them with the model's instructed prefixes (e5 "query: " / "passage: ");
+  // API embedding models take raw text. The cache keys off the exact text, so
+  // prefixes only ever affect local rows.
+  async function embedQuery(texts) {
+    if (!useApi && localReady) return embed(texts.map((t) => local.queryText(t)));
+    return embed(texts);
+  }
+
+  async function embedPassages(texts) {
+    if (!useApi && localReady) return embed(texts.map((t) => local.passageText(t)));
+    return embed(texts);
+  }
+
   return {
     available: true,
     embed,
+    embedQuery,
+    embedPassages,
     modelId: apiId || localId,
+    localKind: localReady ? local.embedKind() : null,
+    localModelLabel: localReady ? local.modelLabel() : null,
     get source() {
       return source;
     },

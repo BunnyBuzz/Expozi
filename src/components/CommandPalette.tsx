@@ -16,8 +16,8 @@ import {
 import type { HistoryItem } from "./Sidebar";
 import type { Paper } from "../data/papers";
 import type { HomeMode } from "./HomeView";
-import { ragApi, KEY_PROVIDERS, CHAT_BACKENDS } from "../rag";
-import type { RagStatus } from "../rag";
+import { ragApi, KEY_PROVIDERS, CHAT_BACKENDS, readerStatus } from "../rag";
+import type { RagStatus, ReaderStatus } from "../rag";
 
 export interface ExpoziSettings {
   model: string;
@@ -319,6 +319,7 @@ function LocalModelCard({
 }) {
   const llm = status?.llm || "missing";
   const emb = status?.embedding || "missing";
+  const embKind = status?.embedKind || null;
   const dl = status?.download || null;
   const pct = dl && dl.total > 0 ? Math.min(100, Math.round((dl.received / dl.total) * 100)) : 0;
   const dlChat = dl && dl.which !== "embedding" ? dl : null;
@@ -406,17 +407,27 @@ function LocalModelCard({
         <div className="flex items-center justify-between">
           <span className="text-xs text-gray-500">
             Embedding model:{" "}
-            {emb === "ready"
-              ? "loaded"
-              : emb === "available"
-                ? "installed"
-                : emb === "downloading"
-                  ? `downloading ${pct}%`
-                  : emb === "loading"
-                    ? "loading…"
-                    : "not installed"}
+            {embKind === "onnx"
+              ? `multilingual-e5-small ONNX — ${
+                  emb === "ready"
+                    ? "ready"
+                    : emb === "loading"
+                      ? "preparing…"
+                      : emb === "error"
+                        ? "error"
+                        : "fast local"
+                }`
+              : emb === "ready"
+                ? "loaded"
+                : emb === "available"
+                  ? "installed"
+                  : emb === "downloading"
+                    ? `downloading ${pct}%`
+                    : emb === "loading"
+                      ? "loading…"
+                      : "not installed"}
           </span>
-          {(emb === "missing" || emb === "error") && llm !== "downloading" && (
+          {embKind !== "onnx" && (emb === "missing" || emb === "error") && llm !== "downloading" && (
             <button onClick={onDownloadEmbedding} className="text-[11px] font-medium text-teal-700 hover:underline">
               Download
             </button>
@@ -432,10 +443,20 @@ function LocalModelCard({
             <div className="h-full rounded-full bg-teal-600 transition-all" style={{ width: `${pct}%` }} />
           </div>
         )}
-        {(emb === "missing" || emb === "error") && (
+        {embKind === "onnx" ? (
           <p className="mt-1 text-[11px] text-gray-400">
-            Optional — without it, search falls back to keyword ranking.
+            Fast local embeddings on CPU (~140 MB, downloaded once on first run). Falls back to keyword
+            ranking if it cannot load.
           </p>
+        ) : (
+          (emb === "missing" || emb === "error") && (
+            <p className="mt-1 text-[11px] text-gray-400">
+              Optional — without it, search falls back to keyword ranking.
+            </p>
+          )
+        )}
+        {emb === "error" && status?.embedError && (
+          <p className="mt-1 text-[11px] text-red-500">{status.embedError}</p>
         )}
       </div>
     </div>
@@ -465,6 +486,18 @@ export function SettingsModal({
   onImport: () => void;
   onLoadModel: () => void;
 }) {
+  const [readers, setReaders] = useState<ReaderStatus | null>(null);
+  useEffect(() => {
+    let alive = true;
+    readerStatus()
+      .then((s) => {
+        if (alive) setReaders(s);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-6"
@@ -656,6 +689,48 @@ export function SettingsModal({
               : settings.depth === "standard"
                 ? "Grounded search planning, perspectives and per-question evidence — CPU friendly."
                 : "Adds extra question rounds, usefulness scoring and longer sectioned reports. Best with an API provider."}
+        </p>
+
+        <p className="mt-5 text-xs font-medium uppercase tracking-wide text-gray-400">Crawling</p>
+        <div className="mt-2 space-y-1.5 text-[13px] text-gray-600">
+          <p className="flex items-center gap-2">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${readers?.browser ? "bg-teal-500" : "bg-gray-300"}`} />
+            Built-in browser — {readers ? (readers.browser ? "ready (the app's own Chromium)" : "unavailable") : "checking…"}
+          </p>
+          <p className="flex items-center gap-2">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${readers?.crawl4ai ? "bg-teal-500" : "bg-gray-300"}`} />
+            crawl4ai — {readers ? (readers.crawl4ai ? "installed (Python)" : readers.crawl4aiReason || "not installed") : "checking…"}
+            {readers && !readers.crawl4ai ? " · optional: pip install crawl4ai" : ""}
+          </p>
+          <p className="flex items-start gap-2">
+            <span
+              className={`mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full ${
+                (readers?.pythonStacks || []).some((s) => s.ok) ? "bg-teal-500" : "bg-gray-300"
+              }`}
+            />
+            <span>
+              Python stacks —{" "}
+              {!readers
+                ? "checking…"
+                : (readers.pythonStacks || []).some((s) => s.ok)
+                  ? readers.pythonStacks!
+                      .map((s) =>
+                        s.ok
+                          ? `✓ ${s.name}${s.python ? ` (${s.python})` : ""}`
+                          : `— ${s.name}${s.reason && s.reason !== "not installed" ? ` (${s.reason})` : ""}`,
+                      )
+                      .join(" · ")
+                  : "none installed · optional: pip install scrapy selectolax beautifulsoup4 lxml DrissionPage"}
+            </span>
+          </p>
+          <p className="flex items-center gap-2">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${readers?.playwright ? "bg-teal-500" : "bg-gray-300"}`} />
+            System Chrome/Edge — {readers ? (readers.playwright ? `found (${readers.playwright})` : readers.playwrightReason || "not found") : "checking…"}
+          </p>
+        </div>
+        <p className="mt-2 text-xs text-gray-400">
+          Sources are read in order: cheerio → Jina → built-in browser → crawl4ai → Python stacks (scrapy/BS4/DrissionPage)
+          → Playwright. Optional tiers are skipped with a reason when absent.
         </p>
 
         <KeyManager />

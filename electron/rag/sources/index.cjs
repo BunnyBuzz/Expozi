@@ -1,7 +1,6 @@
-const { searchSemanticScholar } = require("./semanticScholar.cjs");
 const { searchArxiv } = require("./arxiv.cjs");
 const { searchPubmed } = require("./pubmed.cjs");
-const { searchWeb } = require("./searxng.cjs");
+const { searchWebDetailed } = require("./webSearch.cjs");
 
 function normUrl(u) {
   try {
@@ -15,92 +14,136 @@ function normUrl(u) {
   }
 }
 
-async function searchAll(subQueries, keys, cap = 40) {
-  const q0 = subQueries[0] || "";
+// One query -> every source, with a per-source status breakdown.
+// PubMed + arXiv always; the web (DuckDuckGo, browser-backed) is a marked
+// supplement capped below the scholarly sources. Its tier outcomes
+// (duckduckgo / builtin-browser / searxng) are reported individually —
+// a failed tier is never a silent zero.
+async function searchQueryDetailed(query, perSource = 8, opts = {}) {
+  const n =
+    typeof perSource === "number"
+      ? { arxiv: perSource, pubmed: perSource, web: Math.min(6, perSource) }
+      : perSource || {};
+  const webLimit =
+    opts.web === 0 ? 0 : typeof opts.web === "number" ? opts.web : n.web == null ? 6 : n.web;
+
   const jobs = [
-    searchSemanticScholar(q0, 15, keys && keys.s2),
-    searchArxiv(q0, 10),
-    searchPubmed(q0, 10),
-    searchWeb(q0, 8),
-    ...subQueries.slice(1, 3).map((q) => searchWeb(q, 5)),
+    { name: "arxiv", fn: () => searchArxiv(query, n.arxiv == null ? 8 : n.arxiv) },
+    { name: "pubmed", fn: () => searchPubmed(query, n.pubmed == null ? 8 : n.pubmed) },
   ];
-  const settled = await Promise.allSettled(jobs);
-  const seen = new Set();
+  if (webLimit > 0) jobs.push({ name: "web", fn: () => searchWebDetailed(query, webLimit) });
+
+  const settled = await Promise.allSettled(jobs.map((j) => j.fn()));
   const docs = [];
-  for (const s of settled) {
-    if (s.status !== "fulfilled") continue;
-    for (const d of s.value || []) {
-      if (!d.url || !d.title) continue;
-      const k = normUrl(d.url);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      docs.push({ ...d, id: k });
-      if (docs.length >= cap) break;
+  const seen = new Set();
+  const parts = [];
+
+  settled.forEach((s, i) => {
+    const job = jobs[i];
+    if (s.status === "fulfilled") {
+      const value = s.value;
+      const list = Array.isArray(value) ? value : (value && value.docs) || [];
+      const extraParts = Array.isArray(value) ? null : (value && value.parts) || null;
+      const kept = [];
+      for (const d of list) {
+        if (!d.url || !d.title) continue;
+        const k = normUrl(d.url);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        kept.push({ ...d, id: k });
+      }
+      docs.push(...kept);
+      if (extraParts) parts.push(...extraParts);
+      else parts.push({ name: job.name, status: "ran", count: kept.length });
+    } else {
+      parts.push({
+        name: job.name,
+        status: "failed",
+        reason: String((s.reason && s.reason.message) || s.reason || "error"),
+      });
     }
-    if (docs.length >= cap) break;
-  }
-  return docs;
+  });
+  return { docs, parts };
 }
 
-// One query -> every source (papers first, then the web). Used by the
-// grounded planning pipeline so every sub-question reaches the academic
-// APIs, not only SearXNG.
-async function searchQuery(query, keys, { perSource = 8, web = 5 } = {}) {
-  const jobs = [
-    searchSemanticScholar(query, perSource, keys && keys.s2),
-    searchArxiv(query, perSource),
-    searchPubmed(query, perSource),
-    searchWeb(query, web),
-  ];
-  const settled = await Promise.allSettled(jobs);
-  const seen = new Set();
-  const docs = [];
-  for (const s of settled) {
-    if (s.status !== "fulfilled") continue;
-    for (const d of s.value || []) {
-      if (!d.url || !d.title) continue;
-      const k = normUrl(d.url);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      docs.push({ ...d, id: k });
+// Fan-out search over several queries (batches of 3 to stay on the good side
+// of the free academic APIs), merged and deduped across every source, with a
+// combined per-source status breakdown. `webCap` bounds web results across
+// the whole run so the supplement can never crowd out the scholarly set.
+async function searchManyDetailed(queries, cap = 60, opts = {}) {
+  const list = [...new Set((queries || []).map((q) => String(q || "").trim()).filter(Boolean))].slice(
+    0,
+    opts.maxQueries || 8,
+  );
+  const webCap = opts.webCap == null ? 10 : opts.webCap;
+  const partMap = new Map();
+  const addPart = (p) => {
+    const cur = partMap.get(p.name);
+    if (!cur) {
+      partMap.set(p.name, { ...p });
+      return;
     }
-  }
-  return docs;
-}
+    if (p.status === "ran") {
+      cur.status = "ran";
+      cur.count = (cur.count || 0) + (p.count || 0);
+      cur.reason = undefined;
+    } else if (cur.status !== "ran") {
+      cur.status = p.status;
+      cur.reason = p.reason;
+    }
+  };
 
-// Fan-out search over several queries (limited concurrency to stay on the
-// good side of the free academic APIs).
-async function searchMany(queries, keys, cap = 60, opts = {}) {
-  const list = [...new Set((queries || []).map((q) => String(q || "").trim()).filter(Boolean))].slice(0, opts.maxQueries || 8);
-  if (list.length === 0) return [];
+  if (list.length === 0) return { docs: [], parts: [] };
+
   const seen = new Set();
   const docs = [];
+  let webUsed = 0;
   for (let i = 0; i < list.length; i += 3) {
     const batch = list.slice(i, i + 3);
-    const settled = await Promise.allSettled(batch.map((q) => searchQuery(q, keys, opts)));
-    for (const s of settled) {
-      if (s.status !== "fulfilled") continue;
-      for (const d of s.value) {
+    const results = await Promise.all(batch.map((q) => searchQueryDetailed(q, opts.perSource, opts)));
+    for (const r of results) {
+      r.parts.forEach(addPart);
+      for (const d of r.docs) {
         if (seen.has(d.id)) continue;
+        if (d.provenance === "web") {
+          if (webUsed >= webCap) continue;
+          webUsed++;
+        }
         seen.add(d.id);
         docs.push(d);
-        if (docs.length >= cap) return docs;
+        if (docs.length >= cap) return { docs, parts: [...partMap.values()] };
       }
     }
   }
-  return docs;
+  return { docs, parts: [...partMap.values()] };
 }
 
-// Fair mixing across sources: without this, whichever API returns first
-// (usually arXiv) consumes every fetch slot and the other sources never
-// reach the reading stage.
-function interleaveByProvenance(docs, order = ["scholar", "pubmed", "arxiv", "web"]) {
+// Thin wrappers for scripts/debug harnesses that only need the documents.
+async function searchQuery(query, opts = {}) {
+  const res = await searchQueryDetailed(query, opts.perSource == null ? 8 : opts.perSource, opts);
+  return res.docs;
+}
+
+async function searchMany(queries, cap = 60, opts = {}) {
+  const res = await searchManyDetailed(queries, cap, opts);
+  return res.docs;
+}
+
+// Fair mixing across sources for reading priority: scholarly first (PubMed,
+// then arXiv), web results last. Without this, whichever API returns first
+// consumes every fetch slot and the other sources never reach the reader.
+// Within each source bucket the strongest documents (quality score: study
+// type + recency + citations) are read first.
+function interleaveByProvenance(docs, order = ["pubmed", "arxiv", "web"]) {
   const buckets = new Map(order.map((k) => [k, []]));
   const other = [];
   for (const d of docs) {
     const b = buckets.get(d.provenance);
     (b || other).push(d);
   }
+  const byQuality = (x, y) => (Number(y && y.quality) || 0) - (Number(x && x.quality) || 0);
+  for (const b of buckets.values()) b.sort(byQuality);
+  other.sort(byQuality);
   const out = [];
   let more = true;
   while (more) {
@@ -116,4 +159,11 @@ function interleaveByProvenance(docs, order = ["scholar", "pubmed", "arxiv", "we
   return [...out, ...other];
 }
 
-module.exports = { searchAll, searchQuery, searchMany, interleaveByProvenance, normUrl };
+module.exports = {
+  searchQuery,
+  searchQueryDetailed,
+  searchMany,
+  searchManyDetailed,
+  interleaveByProvenance,
+  normUrl,
+};

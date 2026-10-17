@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Search, Clock, CalendarDays, LibraryBig, FolderPlus, FileStack, Settings } from "lucide-react";
+import { Plus, Search, Clock, CalendarDays, LibraryBig, FolderPlus, FileStack, ListOrdered, Settings } from "lucide-react";
 
 export type NavView = "home" | "workspace" | "library" | "routines";
 
 export interface HistoryItem {
   query: string;
   count: number;
+  sessionId?: string | null;
+  mode?: string | null;
 }
 
 interface Props {
@@ -19,7 +21,7 @@ interface Props {
   onToggleCollapse: () => void;
   onNavigate: (v: NavView) => void;
   onNew: () => void;
-  onSelectHistory: (query: string) => void;
+  onSelectHistory: (item: HistoryItem) => void;
   onOpenSettings: () => void;
 }
 
@@ -144,13 +146,19 @@ export default function Sidebar({ view, history, userName, userEmail, onSignOut,
         {history.map((h, i) => (
           <button
             key={`${h.query}-${i}`}
-            onClick={() => onSelectHistory(h.query)}
+            data-history-query={h.query}
+            data-history-mode={h.mode || ""}
+            onClick={() => onSelectHistory(h)}
             className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[14px] text-gray-800 hover:bg-gray-100 ${
               i === 0 && view === "workspace" ? "bg-gray-200" : ""
             }`}
-            title={h.query}
+            title={h.mode === "review" ? `${h.query} — systematic review (reopens with saved decisions)` : h.query}
           >
-            <FileStack size={18} strokeWidth={1.8} className="shrink-0 text-gray-600" />
+            {h.mode === "review" ? (
+              <ListOrdered size={18} strokeWidth={1.8} className="shrink-0 text-teal-700" />
+            ) : (
+              <FileStack size={18} strokeWidth={1.8} className="shrink-0 text-gray-600" />
+            )}
             <span className="truncate">{h.query}</span>
           </button>
         ))}

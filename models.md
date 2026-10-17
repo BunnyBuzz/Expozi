@@ -1,16 +1,27 @@
 ## MODELS
 
 ### Embedding
-Use @xenova/transformers (Transformers.js).
-Model: 'nomic-ai/nomic-embed-text-v1' (~274MB, downloads automatically on first run).
-Pure JS, no compilation, works on all machines.
+Use @huggingface/transformers (Transformers.js v4, ONNX Runtime).
+Model: 'Xenova/multilingual-e5-small' (384-dim, q8, ~140MB incl. tokenizer,
+downloads automatically on first run into the models folder; 100+ languages,
+~17 ms/passage on CPU measured on this machine). Queries are embedded with a
+"query: " prefix and every passage with "passage: " (embedQuery/embedPassages
+in embedder.cjs) — the instructed format this model is trained for. Swapping
+models = change MODEL_ID + the prefixes in embed-onnx.cjs — the embed cache is
+keyed per model identity, so vectors never mix.
+Pure JS + prebuilt native binaries, no compilation, works on all machines.
 
-async function embedText(text) {
-  const { pipeline } = await import('@xenova/transformers');
-  const embedder = await pipeline('feature-extraction', 'nomic-ai/nomic-embed-text-v1');
-  const output = await embedder(text, { pooling: 'mean', normalize: true });
-  return Array.from(output.data);
+async function embedTexts(texts) {
+  const { pipeline, env } = await import("@huggingface/transformers");
+  env.cacheDir = "<models folder>/onnx";
+  const embedder = await pipeline("feature-extraction", "Xenova/multilingual-e5-small", { dtype: "q8" });
+  const output = await embedder(texts, { pooling: "mean", normalize: true });
+  return output.tolist();
 }
+
+The ONNX path needs no user file. A GGUF embedding model (smallest .gguf in
+./models/) remains an optional fallback when ONNX cannot load — it is not
+pre-downloaded; without one, search runs BM25-only.
 
 ### Chat LLM
 Use node-llama-cpp v3.

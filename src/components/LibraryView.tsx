@@ -158,6 +158,7 @@ export default function LibraryView({
               {starred.map((p) => (
                 <div
                   key={p.id}
+                  data-library-row={p.id}
                   onClick={() => onOpenPaper(p.id)}
                   className={`flex cursor-pointer items-start gap-2 border-b border-gray-100 last:border-0 hover:bg-gray-50 ${
                     density === "compact" ? "px-3 py-1.5" : "px-4 py-3"
@@ -172,6 +173,7 @@ export default function LibraryView({
                     )}
                   </div>
                   <button
+                    data-star={p.id}
                     onClick={(e) => {
                       e.stopPropagation();
                       onToggleStar(p.id);

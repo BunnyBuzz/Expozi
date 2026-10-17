@@ -10,7 +10,9 @@ const { createEmbedder } = require("../electron/rag/embedder.cjs");
 const { kvSet } = require("../electron/rag/keys.cjs");
 
 await db.openDb(path.join(appData, "rag", "data", "expozi.sqlite"));
-await loadEmbeddingModel(path.join(appData, "rag", "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"));
+// ONNX (multilingual-e5-small) is the local embedder; the GGUF fallback file
+// is optional and may not be installed — null keeps this on the ONNX path.
+await loadEmbeddingModel(null);
 
 const uniq = Date.now().toString(36);
 const texts = [

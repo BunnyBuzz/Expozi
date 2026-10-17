@@ -24,9 +24,9 @@ const saveKey = async (idx, key) => {
   await page.getByRole("button", { name: "Save", exact: true }).nth(idx).click();
   await page.waitForTimeout(1500);
 };
-// KEY_PROVIDERS order: scholar, jina, exa, tavily, openai, openrouter(5), anthropic, gemini(7)
-await saveKey(5, OR_KEY);
-await page.getByRole("button", { name: "Test", exact: true }).nth(5).click();
+// KEY_PROVIDERS order: jina, tavily, openai, openrouter(3), anthropic, gemini(5)
+await saveKey(3, OR_KEY);
+await page.getByRole("button", { name: "Test", exact: true }).nth(3).click();
 await page.waitForTimeout(15000);
 const orRes = await page.evaluate(() => {
   const els = Array.from(document.querySelectorAll("p")).filter((p) => p.textContent && /Endpoint reachable|Rejected|Unreachable|Network/.test(p.textContent));
@@ -34,8 +34,8 @@ const orRes = await page.evaluate(() => {
 });
 console.log("OPENROUTER TEST:", JSON.stringify(orRes));
 
-await saveKey(7, GEM_KEY);
-await page.getByRole("button", { name: "Test", exact: true }).nth(7).click();
+await saveKey(5, GEM_KEY);
+await page.getByRole("button", { name: "Test", exact: true }).nth(5).click();
 await page.waitForTimeout(15000);
 const gRes = await page.evaluate(() => {
   const els = Array.from(document.querySelectorAll("p")).filter((p) => p.textContent && /Key accepted|Rejected|Unreachable|Network/.test(p.textContent));

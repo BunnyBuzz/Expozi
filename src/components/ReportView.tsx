@@ -1,8 +1,10 @@
-import { ListOrdered, BookOpen, Copy, Check, Download, Star, FileText, FlaskConical } from "lucide-react";
+import { ListOrdered, BookOpen, Copy, Check, Download, Star, FileText, FlaskConical, Maximize2, Minus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Paper } from "../data/papers";
-import { metaLine } from "../data/live";
-import LiteratureTable from "./LiteratureTable";
+import type { RagToolEvent } from "../rag";
+import { metaLine, reportTitle } from "../data/live";
+import AnswerBody from "./AnswerBody";
+import LiteratureTable, { type ScreeningEntry } from "./LiteratureTable";
 import type { HomeMode } from "./HomeView";
 
 export interface FollowUpItem {
@@ -27,78 +29,17 @@ interface Props {
   mode: HomeMode;
   suggestions?: string[];
   stages?: { stage: string; message: string }[];
+  toolEvents?: RagToolEvent[];
   error?: string | null;
+  artifactOpen?: boolean;
+  onOpenArtifact?: () => void;
+  onExport?: (format: "md" | "pdf") => void;
+  decisions?: Record<string, ScreeningEntry>;
+  onDecide?: (url: string, decision: string | null, note: string | null) => void;
+  screenSaveError?: string | null;
 }
 
-type Block = { kind: "h1" | "h2" | "h3" | "p" | "li"; text: string; marker?: string };
-
-function parseAnswer(text: string): Block[] {
-  const blocks: Block[] = [];
-  let para: string[] = [];
-  const flush = () => {
-    if (para.length) {
-      blocks.push({ kind: "p", text: para.join(" ").trim() });
-      para = [];
-    }
-  };
-  for (const rawLine of String(text || "").split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) {
-      flush();
-      continue;
-    }
-    const h = line.match(/^(#{1,3})\s+(.*)$/);
-    if (h) {
-      flush();
-      blocks.push({ kind: h[1].length === 1 ? "h1" : h[1].length === 2 ? "h2" : "h3", text: h[2] });
-      continue;
-    }
-    const li = line.match(/^([-*•]|\d+\.)\s+(.*)$/);
-    if (li) {
-      flush();
-      blocks.push({ kind: "li", text: li[2], marker: /^\d/.test(li[1]) ? li[1] : "•" });
-      continue;
-    }
-    para.push(line);
-  }
-  flush();
-  return blocks;
-}
-
-function AnswerBody({ text, streaming }: { text: string; streaming: boolean }) {
-  const blocks = parseAnswer(text);
-  return (
-    <div className="mt-5 text-[14px] leading-[1.7] text-gray-800">
-      {blocks.map((b, i) =>
-        b.kind === "h1" ? (
-          <h1 key={i} className="mt-6 text-[20px] font-semibold leading-snug text-gray-900 first:mt-0">
-            {b.text}
-          </h1>
-        ) : b.kind === "h2" ? (
-          <h2 key={i} className="mt-5 text-[17px] font-semibold leading-snug text-gray-900">
-            {b.text}
-          </h2>
-        ) : b.kind === "h3" ? (
-          <h3 key={i} className="mt-4 text-[15px] font-semibold text-gray-900">
-            {b.text}
-          </h3>
-        ) : b.kind === "li" ? (
-          <div key={i} className="mt-1 flex gap-2">
-            <span className="select-none text-gray-400">{b.marker ?? "•"}</span>
-            <span>{b.text}</span>
-          </div>
-        ) : (
-          <p key={i} className="mt-2.5">
-            {b.text}
-          </p>
-        ),
-      )}
-      {streaming && <span className="ml-1 inline-block h-4 w-[2px] animate-pulse bg-teal-600" />}
-    </div>
-  );
-}
-
-export default function ReportView({ query, papers, starred, onToggleStar, onOpenPaper, onFollowUp, followUpBlocks, version, kindLabel, thinking, answer, streaming, mode, suggestions = [], stages = [], error }: Props) {
+export default function ReportView({ query, papers, starred, onToggleStar, onOpenPaper, onFollowUp, followUpBlocks, version, kindLabel, thinking, answer, streaming, mode, suggestions = [], stages = [], toolEvents = [], error, artifactOpen = false, onOpenArtifact, onExport, decisions = {}, onDecide, screenSaveError = null }: Props) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -157,6 +98,32 @@ export default function ReportView({ query, papers, starred, onToggleStar, onOpe
         </div>
       )}
 
+      {toolEvents.length > 0 && (
+        <div className="mt-3 rounded-xl border border-gray-200 bg-white px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Tools</p>
+          <div className="mt-2 space-y-1.5">
+            {toolEvents.map((t) => (
+              <p key={t.call} className="flex items-center gap-2 text-[13px] text-gray-600">
+                {t.status === "running" ? (
+                  <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-teal-600" />
+                ) : t.status === "ran" ? (
+                  <Check size={14} className="shrink-0 text-teal-600" />
+                ) : t.status === "skipped" ? (
+                  <Minus size={14} className="shrink-0 text-gray-400" />
+                ) : (
+                  <X size={14} className="shrink-0 text-red-500" />
+                )}
+                <span className="shrink-0 font-mono text-[12px] text-gray-800">{t.tool}</span>
+                <span className="min-w-0 break-words text-gray-400">
+                  {t.detail}
+                  {t.status !== "running" && t.ms != null ? ` · ${t.ms} ms` : ""}
+                </span>
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
       {error && (
         <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] leading-relaxed text-red-700">
           Research failed: {error}
@@ -164,26 +131,85 @@ export default function ReportView({ query, papers, starred, onToggleStar, onOpe
       )}
 
       {mode === "review" && papers.length > 0 && (
-        <LiteratureTable papers={papers} starred={starred} onToggleStar={onToggleStar} onOpenPaper={onOpenPaper} />
+        <LiteratureTable
+          query={query}
+          papers={papers}
+          decisions={decisions}
+          onDecide={onDecide ?? (() => {})}
+          saveError={screenSaveError}
+          starred={starred}
+          onToggleStar={onToggleStar}
+          onOpenPaper={onOpenPaper}
+        />
       )}
 
       {mode === "review" && !streaming && papers.length === 0 && !error && (
         <p className="mt-5 text-[14px] text-gray-500">No sources were found for this review.</p>
       )}
 
-      {/* artifact card (report mode produces a file) */}
-      {mode === "report" && (
-      <div className="mt-4 flex gap-5 rounded-2xl border border-gray-200 bg-white p-5">
-        <div className="grid h-[100px] w-[150px] shrink-0 place-items-center rounded-xl bg-gray-100">
-          <FileText size={40} strokeWidth={1.2} className="text-gray-400" />
+      {/* artifact card (report mode produces a file) — opens the right-side viewer.
+          Shown only when the run has settled (no streaming / error) so a partial
+          mid-run answer can never be exported as "the report". */}
+      {mode === "report" && !streaming && !error && (answer ?? "").trim().length > 0 && (
+        <div
+          data-artifact-card="true"
+          onClick={() => onOpenArtifact?.()}
+          className={`group mt-4 cursor-pointer rounded-2xl border bg-white p-4 transition ${
+            artifactOpen
+              ? "border-teal-500 ring-1 ring-teal-500/30"
+              : "border-gray-200 hover:border-gray-300 hover:shadow-sm"
+          }`}
+        >
+          <div className="flex items-center gap-4">
+            <div className="grid h-[84px] w-[120px] shrink-0 place-items-center rounded-lg border border-gray-100 bg-gray-50">
+              <FileText size={34} strokeWidth={1.2} className="text-teal-700/70" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[15px] font-semibold leading-snug text-gray-900">
+                {reportTitle(answer ?? "", query)}
+              </p>
+              <p className="mt-1 text-[13px] text-gray-500">
+                {kindLabel} · V{version}
+              </p>
+            </div>
+            <div
+              className={`flex shrink-0 items-center gap-1 transition ${
+                artifactOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+              }`}
+            >
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExport?.("pdf");
+                }}
+                title="Download PDF"
+                className="rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              >
+                <Download size={16} />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExport?.("md");
+                }}
+                title="Download Markdown (.md)"
+                className="rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              >
+                <FileText size={16} />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenArtifact?.();
+                }}
+                title="Open in viewer"
+                className="rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+              >
+                <Maximize2 size={16} />
+              </button>
+            </div>
+          </div>
         </div>
-        <div className="min-w-0 py-1">
-          <p className="text-[16px] font-semibold leading-snug text-gray-900">
-            {query.length > 80 ? query.slice(0, 80) + "…" : query} — {kindLabel === "Report" ? "English Report" : kindLabel}
-          </p>
-          <p className="mt-1.5 text-sm text-gray-500">{kindLabel} · V{version}</p>
-        </div>
-      </div>
       )}
 
       {/* answer */}
@@ -214,7 +240,11 @@ export default function ReportView({ query, papers, starred, onToggleStar, onOpe
             <button onClick={copyAnswer} className="rounded-full p-2.5 text-gray-500 hover:bg-gray-100" title="Copy">
               {copied ? <Check size={17} /> : <Copy size={17} />}
             </button>
-            <button className="rounded-full p-2.5 text-gray-500 hover:bg-gray-100" title="Download">
+            <button
+              onClick={() => onExport?.("pdf")}
+              className="rounded-full p-2.5 text-gray-500 hover:bg-gray-100"
+              title="Download PDF"
+            >
               <Download size={17} />
             </button>
           </div>
@@ -235,6 +265,7 @@ export default function ReportView({ query, papers, starred, onToggleStar, onOpe
                     <p className="mt-0.5 truncate text-xs text-gray-500">{metaLine(p)}</p>
                   </div>
                   <button
+                    data-star={p.id}
                     onClick={(e) => {
                       e.stopPropagation();
                       onToggleStar(p.id);

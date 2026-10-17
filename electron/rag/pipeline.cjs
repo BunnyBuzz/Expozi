@@ -1,41 +1,13 @@
 const { randomUUID } = require("crypto");
-const { searchAll, searchQuery, searchMany, interleaveByProvenance } = require("./sources/index.cjs");
-const { fetchMany, looksBlocked } = require("./fetch.cjs");
-const { chunkText } = require("./chunk.cjs");
-const { createEmbedder } = require("./embedder.cjs");
+const { interleaveByProvenance } = require("./sources/index.cjs");
+const { orderByQuality } = require("./quality.cjs");
 const { buildIndex, searchIndex } = require("./bm25.cjs");
 const { searchVector } = require("./vector.cjs");
 const { rrfFuse } = require("./rrf.cjs");
-const { expandQuery } = require("./expand.cjs");
-const { rerank } = require("./rerank.cjs");
-const {
-  planQueries,
-  genPerspectives,
-  genQuestions,
-  cardsFromDocs,
-  DEFAULT_PERSPECTIVE,
-} = require("./plan.cjs");
-const { selectEvidence, rubricScore } = require("./filter.cjs");
-const { genOutline, writableSections } = require("./outline.cjs");
-const {
-  writeSection,
-  writeAbstractAndConclusion,
-  assembleReport,
-  renumberCitations,
-  referenceLineFromDoc,
-} = require("./write.cjs");
+const { cardsFromDocs, DEFAULT_PERSPECTIVE } = require("./plan.cjs");
 const db = require("./db.cjs");
-
-const AGENT_PROMPT =
-  "You are Expozi, a research assistant. Answer ONLY from the evidence below. " +
-  "Cite claims with the passage numbers like [1], [2]. Be concise and specific. " +
-  "Start directly with the answer; do not repeat or rephrase the question. " +
-  "If the evidence covers the task only partially, answer what it supports and state the gap.";
-
-const REPORT_PROMPT =
-  "Write a formal research report answering the question below. Use ONLY the provided evidence. Format as:\n" +
-  "# Title\n## Abstract (about 120 words)\n## Introduction\n## Key Findings (subsections per theme)\n## Conclusion\n## References\n" +
-  "Cite sources as [1], [2] etc. Return plain text with these headings, no JSON.";
+const tools = require("../tools/index.cjs");
+const { AGENT_PROMPT, REPORT_PROMPT } = require("../tools/writeAnswer.cjs");
 
 function checkAbort(signal) {
   if (signal && signal.aborted) {
@@ -45,11 +17,21 @@ function checkAbort(signal) {
   }
 }
 
+// Execution context handed to every tool call: the environment (model, keys,
+// abort signal, progress + trace sinks) plus the run's session id.
+function makeCtx({ sessionId, promptFn, keys, signal, onStage, onToken, onTool }) {
+  return { sessionId, promptFn, keys, signal, onStage, onToken, emit: onTool };
+}
+
 function persistSources(sessionId, docs) {
   try {
     for (const d of docs) {
+      // Upsert so a re-persist (deep runs add more docs after the first pass)
+      // refreshes the enrichment fields instead of being ignored.
       db.run(
-        "INSERT OR IGNORE INTO sources (session_id, title, url, authors, year, journal, doi, citations, source_type, abstract) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO sources (session_id, title, url, authors, year, journal, doi, citations, source_type, abstract, study_type, quality, retracted) " +
+          "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) " +
+          "ON CONFLICT(session_id, url) DO UPDATE SET citations=excluded.citations, year=excluded.year, doi=excluded.doi, study_type=excluded.study_type, quality=excluded.quality, retracted=excluded.retracted",
         [
           sessionId,
           d.title,
@@ -61,6 +43,9 @@ function persistSources(sessionId, docs) {
           d.citations || 0,
           d.provenance,
           d.abstract || "",
+          d.studyType || null,
+          typeof d.quality === "number" ? d.quality : null,
+          d.retracted ? 1 : 0,
         ],
       );
     }
@@ -69,95 +54,38 @@ function persistSources(sessionId, docs) {
   }
 }
 
-function persistPassages(sessionId, withText, capped) {
-  try {
-    const srcIds = {};
-    for (const x of withText) {
-      const row = db.all("SELECT id FROM sources WHERE session_id=? AND url=?", [sessionId, x.doc.url])[0];
-      srcIds[x.doc.url] = row ? row.id : null;
-    }
-    capped.forEach((c, i) => {
-      const url = withText[c.docIdx].doc.url;
-      db.run("INSERT INTO passages (source_id, session_id, chunk_index, text, embedding) VALUES (?,?,?,?,?)", [
-        srcIds[url] || null,
-        sessionId,
-        i,
-        c.text,
-        c.vec ? JSON.stringify(c.vec) : null,
-      ]);
-    });
-  } catch {
-    /* noop */
-  }
-}
-
-// Fetch pages, chunk them, rank with BM25 + embeddings. Shared by all depths.
-async function loadEvidence({ sessionId, query, docs, maxUrls, keys, signal, onStage }) {
+// Read pages + index them into a ranked evidence base. Shared by all depths.
+async function loadEvidence({ sessionId, query, docs, maxUrls, ctx }) {
+  const { signal, onStage } = ctx;
   onStage("fetch", `Reading ${Math.min(docs.length, maxUrls)} sources…`);
   checkAbort(signal);
   const fetchDocs = interleaveByProvenance(docs).slice(0, maxUrls);
-  const fetched = await fetchMany(
-    fetchDocs.map((d) => d.url),
-    3,
-    keys && keys.jina,
-  );
-  const withText = fetchDocs
-    .map((d, i) => ({
-      doc: d,
-      text:
-        fetched[i] && fetched[i].length > 200 && !looksBlocked(fetched[i])
-          ? fetched[i]
-          : d.abstract || "",
-    }))
-    .filter((x) => x.text && x.text.length > 100);
+
+  const read = await tools.run("read_pages", { docs: fetchDocs }, ctx);
+  const withText = read.data;
   if (withText.length === 0) return null;
 
-  onStage("embed", "Indexing the sources…");
-  checkAbort(signal);
-  const chunks = [];
-  withText.forEach((x, di) => {
-    chunkText(x.text).forEach((c, ci) => chunks.push({ docIdx: di, chunkIdx: ci, text: c }));
-  });
-  const capped = chunks.slice(0, 250);
-
-  const bm = buildIndex(capped.map((c) => c.text));
-  const bmRanked = searchIndex(bm, query, 40);
-
-  let vecRanked = [];
-  const embedder = await createEmbedder({
-    onProgress: (done, total, note) => onStage("embed", note || `Indexing the sources… ${done}/${total}`),
-  });
-  if (embedder.available) {
-    try {
-      const qv = (await embedder.embed([query]))[0];
-      const vecs = await embedder.embed(capped.map((c) => c.text));
-      capped.forEach((c, i) => {
-        c.vec = vecs[i];
-      });
-      checkAbort(signal);
-      if (qv) vecRanked = searchVector(qv, vecs, capped.length);
-    } catch (e) {
-      if (e && e.name === "AbortError") throw e;
-      vecRanked = [];
-    }
-  }
-
-  persistPassages(sessionId, withText, capped);
+  const indexed = await tools.run("index_sources", { sessionId, query, withText }, ctx);
+  const { capped, bmRanked, vecRanked, embedder } = indexed.data;
   return { withText, capped, bmRanked, vecRanked, embedder };
 }
 
 // ---------------------------------------------------------------------------
 // v2 pipeline: grounded planning (GPT-Researcher) + perspective-guided
 // questions (STORM) + smart context filtering + outline-first report writing.
+// Every capability is invoked through the tools registry (electron/tools/),
+// so each step is traced for the Tool panel and the dev logs.
 // ---------------------------------------------------------------------------
-async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToken, maxTokens, keys, depth }) {
+async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToken, maxTokens, keys, depth, onTool }) {
   const deep = depth === "deep";
+  const ctx = makeCtx({ sessionId, promptFn, keys, signal, onStage, onToken, onTool });
 
   onStage("scan", "Scanning the topic…");
   checkAbort(signal);
   let grounding = [];
   try {
-    grounding = interleaveByProvenance(await searchQuery(query, keys, { perSource: 5, web: 4 }));
+    const scan = await tools.run("scan_topic", { query, perSource: 5 }, ctx);
+    grounding = interleaveByProvenance(scan.data);
   } catch {
     grounding = [];
   }
@@ -165,18 +93,24 @@ async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToke
 
   onStage("plan", "Planning the searches…");
   checkAbort(signal);
-  const planned = await planQueries(promptFn, query, cards, deep ? 6 : 4);
+  const planned = (await tools.run("plan_queries", { query, cards, max: deep ? 6 : 4 }, ctx)).data;
 
   let perspectives = [];
   let questions = [];
   if (mode !== "review") {
     onStage("perspectives", "Gathering perspectives…");
     checkAbort(signal);
-    perspectives = await genPerspectives(promptFn, query, deep ? 3 : 2);
+    perspectives = (await tools.run("gather_perspectives", { query, max: deep ? 3 : 2 }, ctx)).data;
     if (perspectives.length === 0) perspectives = [DEFAULT_PERSPECTIVE];
     onStage("questions", "Asking research questions…");
     checkAbort(signal);
-    questions = await genQuestions(promptFn, query, perspectives, [], cards, deep ? 2 : 1);
+    questions = (
+      await tools.run(
+        "generate_questions",
+        { query, perspectives, asked: [], cards, perPerspective: deep ? 2 : 1 },
+        ctx,
+      )
+    ).data;
   }
 
   // The raw question is always searched too: it is the most reliable query
@@ -184,7 +118,16 @@ async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToke
   const searchList = [query, ...planned, ...questions];
   onStage("search", `Searching ${searchList.length} queries…`);
   checkAbort(signal);
-  const docs = await searchMany(searchList, keys, deep ? 70 : 50, { maxQueries: deep ? 12 : 8 });
+  const searchRes = await tools.run(
+    "search_papers",
+    { queries: searchList, cap: deep ? 70 : 50, maxQueries: deep ? 12 : 8, perSource: 8 },
+    ctx,
+  );
+  // Citation counts, years, study types and the quality score that drives
+  // ordering (newest → best) and evidence numbering.
+  const docs = searchRes.data.length
+    ? (await tools.run("enrich_sources", { docs: searchRes.data }, ctx)).data
+    : searchRes.data;
   persistSources(sessionId, docs);
   if (docs.length === 0) return { sessionId, sources: [], answer: null };
 
@@ -192,20 +135,28 @@ async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToke
     checkAbort(signal);
     onStage("questions", "Refining the questions…");
     try {
-      const more = await genQuestions(
-        promptFn,
-        query,
-        perspectives,
-        questions,
-        cardsFromDocs(docs, { chars: 120, limit: 8 }),
-        1,
-      );
+      const more = (
+        await tools.run(
+          "generate_questions",
+          {
+            query,
+            perspectives,
+            asked: questions,
+            cards: cardsFromDocs(docs, { chars: 120, limit: 8 }),
+            perPerspective: 1,
+          },
+          ctx,
+        )
+      ).data;
       if (more.length > 0) {
         questions.push(...more);
         onStage("search", `Searching ${more.length} follow-up queries…`);
-        const extra = await searchMany(more, keys, 30);
+        const extra = (await tools.run("search_papers", { queries: more, cap: 30, perSource: 8 }, ctx)).data;
+        const extraEnriched = extra.length
+          ? (await tools.run("enrich_sources", { docs: extra }, ctx)).data
+          : extra;
         const seen = new Set(docs.map((d) => d.id));
-        for (const d of extra) {
+        for (const d of extraEnriched) {
           if (!seen.has(d.id)) {
             seen.add(d.id);
             docs.push(d);
@@ -219,32 +170,44 @@ async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToke
     }
   }
 
-  const loaded = await loadEvidence({ sessionId, query, docs, maxUrls: deep ? 24 : 18, keys, signal, onStage });
-  if (!loaded) return { sessionId, sources: docs.slice(0, 8), answer: null };
+  const loaded = await loadEvidence({ sessionId, query, docs, maxUrls: deep ? 24 : 18, ctx });
+  if (!loaded) return { sessionId, sources: orderByQuality(docs).slice(0, 8), answer: null };
   const { withText, capped, bmRanked, vecRanked, embedder } = loaded;
 
   onStage("filter", "Selecting the evidence…");
   checkAbort(signal);
-  let pool = selectEvidence(capped, {
-    vecRanked,
-    bmRanked,
-    maxPerDoc: deep ? 4 : 3,
-    budgetChars: deep ? 16000 : 12000,
-  });
-  if (pool.length === 0) pool = capped.map((_, i) => i).slice(0, 12);
+  let pool = (
+    await tools.run(
+      "select_evidence",
+      {
+        capped,
+        vecRanked,
+        bmRanked,
+        maxPerDoc: deep ? 4 : 3,
+        budgetChars: deep ? 16000 : 12000,
+      },
+      ctx,
+    )
+  ).data;
 
   if (deep && mode === "report") {
     try {
-      const scores = await rubricScore(promptFn, query, pool.map((i) => capped[i]));
-      if (scores.length === pool.length) {
-        const kept = pool.filter((_, k) => scores[k] >= 1);
-        if (kept.length >= 4) pool = kept;
-      }
+      pool = (await tools.run("rubric_filter", { query, pool, capped }, ctx)).data;
     } catch (e) {
       if (e && e.name === "AbortError") throw e;
       /* keep the current pool */
     }
   }
+
+  // Evidence numbering follows source quality: [1] is the strongest source
+  // (study type + recency + citations), so the report cites its best evidence
+  // first instead of whichever passage BM25 happened to rank first.
+  const qualityOfPassage = (i) => {
+    const p = capped[i];
+    const d = p && withText[p.docIdx] ? withText[p.docIdx].doc : null;
+    return (d && Number(d.quality)) || 0;
+  };
+  pool = [...pool].sort((a, b) => qualityOfPassage(b) - qualityOfPassage(a) || a - b);
 
   const numberOf = new Map(pool.map((i, n) => [i, n + 1]));
   const passageByNo = new Map(pool.map((i, n) => [n + 1, capped[i]]));
@@ -290,7 +253,13 @@ async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToke
         parents.push(d);
       }
     }
-    return { sessionId, sources: parents.slice(0, 20), answer: null };
+    const sorted = orderByQuality(parents).slice(0, 20);
+    try {
+      await tools.run("screen_sources", { sessionId, query, sources: sorted }, ctx);
+    } catch {
+      /* proposals are best-effort — the trace already shows the failure */
+    }
+    return { sessionId, sources: sorted, answer: null };
   }
 
   const topicList = questions.length > 0 ? questions : planned;
@@ -308,10 +277,13 @@ async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToke
     onStage("outline", "Building the report outline…");
     checkAbort(signal);
     const maxSections = deep ? 6 : 4;
-    const outline = await genOutline(promptFn, query, cardsFromDocs(docs, { chars: 100, limit: 8 }), {
-      maxSections,
-    });
-    const sections = writableSections(outline, maxSections);
+    const { outline, sections } = (
+      await tools.run(
+        "build_outline",
+        { query, cards: cardsFromDocs(docs, { chars: 100, limit: 8 }), maxSections },
+        ctx,
+      )
+    ).data;
     onStage("outline", `Outline ready: ${sections.map((s) => s.title).join(" · ") || "(default)"}`);
 
     const used = new Set();
@@ -331,50 +303,41 @@ async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToke
       }
       const items = packFor(topic, qv, 5).filter((it) => it.n && !used.has(it.n));
       for (const it of items) used.add(it.n);
-      const text = await writeSection(promptFn, {
-        query,
-        section,
-        evidence: items,
-        maxTokens: 420,
-        onToken,
-      });
+      const text = (
+        await tools.run(
+          "write_section",
+          { query, section, evidence: items, maxTokens: 420, progress: `${si + 1}/${sections.length}` },
+          ctx,
+        )
+      ).data;
       written.push({ title: section.title, text });
     }
 
     if (written.length === 0) {
       onStage("synthesize", "Writing the report…");
-      const ctx = pool
+      const ctxText = pool
         .slice(0, 8)
         .map((i) => `[${numberOf.get(i)}] ${capped[i].text.slice(0, 700)}`)
         .join("\n\n");
-      const ans = await promptFn(
-        [{ role: "user", content: REPORT_PROMPT + "\n\nQuestion: " + query + "\n\nEvidence:\n" + ctx }],
-        maxTokens || 900,
-        onToken,
-      );
+      const ans = (
+        await tools.run(
+          "write_answer",
+          { query, evidence: ctxText, style: "report", tail: false, maxTokens: maxTokens || 900 },
+          ctx,
+        )
+      ).data;
       return { sessionId, sources: parentsFromNumbers(used), answer: ans };
     }
 
     onStage("assemble", "Assembling the report…");
     checkAbort(signal);
-    const bodyText = written.map((w) => w.text).join("\n\n");
-    const { abstract, conclusion } = await writeAbstractAndConclusion(promptFn, { query, body: bodyText });
-    const rawFull = assembleReport({
-      outlineTitle: outline.title,
-      query,
-      abstract,
-      sections: written,
-      conclusion,
-      references: [],
-    });
-    const { text: finalText, references, refDocs } = renumberCitations(rawFull, {
-      passageByNo,
-      docOfPassage,
-      referenceLine: referenceLineFromDoc,
-    });
-    const answer = references.length
-      ? `${finalText}\n\n## References\n${references.join("\n")}`
-      : finalText;
+    const { answer, refDocs } = (
+      await tools.run(
+        "assemble_report",
+        { outlineTitle: outline.title, query, sections: written, passageByNo, docOfPassage },
+        ctx,
+      )
+    ).data;
     const parents = (refDocs || []).filter(Boolean);
     return {
       sessionId,
@@ -402,49 +365,69 @@ async function runV2({ sessionId, query, mode, promptFn, signal, onStage, onToke
   for (let qi = 0; qi < topicList.length; qi++) {
     addItems(packFor(topicList[qi], topicVecs[qi], deep ? 4 : 3));
   }
-  const prompt =
-    AGENT_PROMPT +
-    "\n\nQuestion: " +
-    query +
-    "\n\nEvidence:\n" +
-    lines.join("\n\n") +
-    "\n\nAnswer the question above from this evidence. Give specific findings (effects, directions, magnitudes) and cite them as [n].";
-  const answer = await promptFn([{ role: "user", content: prompt }], maxTokens || 500, onToken);
+  const answer = (
+    await tools.run(
+      "write_answer",
+      { query, evidence: lines.join("\n\n"), style: "agent", maxTokens: maxTokens || 500 },
+      ctx,
+    )
+  ).data;
   const parents = parentsFromNumbers(usedNos);
-  return { sessionId, sources: parents.length ? parents : docs.slice(0, 8), answer };
+  return { sessionId, sources: parents.length ? parents : orderByQuality(docs).slice(0, 8), answer };
 }
 
 // ---------------------------------------------------------------------------
 // lite pipeline: the original single-pass flow (blind expansion, one global
 // ranking, flat synthesis). Kept for the depth setting and A/B comparisons.
 // ---------------------------------------------------------------------------
-async function runLite({ sessionId, query, mode, promptFn, signal, onStage, onToken, maxTokens, keys }) {
+async function runLite({ sessionId, query, mode, promptFn, signal, onStage, onToken, maxTokens, keys, onTool }) {
+  const ctx = makeCtx({ sessionId, promptFn, keys, signal, onStage, onToken, onTool });
+
   onStage("expand", "Breaking down your question…");
   checkAbort(signal);
-  const subs = await expandQuery(promptFn, query);
+  const subs = (await tools.run("expand_query", { query }, ctx)).data;
 
-  onStage("search", "Searching papers and the web…");
+  onStage("search", "Searching papers…");
   checkAbort(signal);
-  const docs = await searchAll(subs, keys);
-  persistSources(sessionId, docs);
-  if (docs.length === 0) return { sessionId, sources: [], answer: null };
+  // expandQuery returns [rawQuestion, ...expandedSubQueries]; searching only
+  // the raw question wasted the expansion and left question-phrased searches
+  // with web-only results, so lite searches the raw question plus the first
+  // two expanded sub-queries.
+  const docs = (
+    await tools.run(
+      "search_papers",
+      {
+        queries: subs.slice(0, 3),
+        cap: 40,
+        maxQueries: 3,
+        perSource: { scholar: 15, arxiv: 10, pubmed: 10 },
+      },
+      ctx,
+    )
+  ).data;
+  const enriched = docs.length
+    ? (await tools.run("enrich_sources", { docs }, ctx)).data
+    : docs;
+  persistSources(sessionId, enriched);
+  if (enriched.length === 0) return { sessionId, sources: [], answer: null };
 
-  const loaded = await loadEvidence({ sessionId, query, docs, maxUrls: 18, keys, signal, onStage });
-  if (!loaded) return { sessionId, sources: docs.slice(0, 8), answer: null };
-  const { withText, capped, bmRanked, vecRanked } = loaded;
+  const loaded = await loadEvidence({ sessionId, query, docs: enriched, maxUrls: 18, ctx });
+  if (!loaded) return { sessionId, sources: orderByQuality(enriched).slice(0, 8), answer: null };
+  const { withText, capped } = loaded;
 
   onStage("rerank", "Ranking the evidence…");
   checkAbort(signal);
-  const fused = rrfFuse(
-    [bmRanked.map((r) => r.id), vecRanked.map((r) => r.i)],
-    vecRanked.length > 0 ? [0.35, 0.65] : [1, 0],
-  ).slice(0, 20);
-  const top = await rerank(promptFn, query, fused.map((f) => capped[f.idx]), 5);
+  const ranked = await tools.run(
+    "rank_evidence",
+    { query, capped, bmRanked: loaded.bmRanked, vecRanked: loaded.vecRanked, topN: 5 },
+    ctx,
+  );
+  const { fused, top } = ranked.data;
 
   const parents = [];
   const seen = new Set();
-  const ranked = mode === "review" ? fused.map((f) => ({ ...capped[f.idx], score: f.score })) : top;
-  for (const p of ranked) {
+  const rankedPassages = mode === "review" ? fused.map((f) => ({ ...capped[f.idx], score: f.score })) : top;
+  for (const p of rankedPassages) {
     const w = withText[p.docIdx];
     if (!w) continue;
     const d = w.doc;
@@ -455,7 +438,13 @@ async function runLite({ sessionId, query, mode, promptFn, signal, onStage, onTo
   }
 
   if (mode === "review") {
-    return { sessionId, sources: parents.slice(0, 20), answer: null };
+    const sorted = orderByQuality(parents).slice(0, 20);
+    try {
+      await tools.run("screen_sources", { sessionId, query, sources: sorted }, ctx);
+    } catch {
+      /* proposals are best-effort — the trace already shows the failure */
+    }
+    return { sessionId, sources: sorted, answer: null };
   }
 
   onStage("synthesize", "Writing answer…");
@@ -467,24 +456,41 @@ async function runLite({ sessionId, query, mode, promptFn, signal, onStage, onTo
       const n = parents.indexOf(d) + 1;
       return `[${n}] ${p.text.slice(0, 700)}`;
     });
-  const prompt =
-    (mode === "report" ? REPORT_PROMPT : AGENT_PROMPT) +
-    "\n\nQuestion: " +
-    query +
-    "\n\nEvidence:\n" +
-    ctxLines.join("\n\n");
-  const answer = await promptFn([{ role: "user", content: prompt }], maxTokens || 500, onToken);
-  return { sessionId, sources: parents, answer };
+  const answer = (
+    await tools.run(
+      "write_answer",
+      {
+        query,
+        evidence: ctxLines.join("\n\n"),
+        style: mode === "report" ? "report" : "agent",
+        tail: false,
+        maxTokens: maxTokens || 500,
+      },
+      ctx,
+    )
+  ).data;
+  return { sessionId, sources: orderByQuality(parents), answer };
 }
 
-async function runResearch({ query, mode, promptFn, signal, onStage, onToken, maxTokens, keys, depth = "standard" }) {
+async function runResearch({
+  query,
+  mode,
+  promptFn,
+  signal,
+  onStage,
+  onToken,
+  maxTokens,
+  keys,
+  depth = "standard",
+  onTool,
+}) {
   const sessionId = randomUUID();
   try {
     db.run("INSERT INTO sessions (id, query, mode) VALUES (?, ?, ?)", [sessionId, query, mode]);
   } catch {
     /* never break the pipeline on DB errors */
   }
-  const args = { sessionId, query, mode, promptFn, signal, onStage, onToken, maxTokens, keys };
+  const args = { sessionId, query, mode, promptFn, signal, onStage, onToken, maxTokens, keys, onTool };
   if (depth === "lite") return runLite(args);
   return runV2({ ...args, depth });
 }

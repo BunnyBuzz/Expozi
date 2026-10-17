@@ -9,6 +9,8 @@ export interface RagStatus {
   embedding?: string | null;
   embedFile?: string | null;
   embedModelName?: string;
+  embedKind?: string | null;
+  embedError?: string | null;
 }
 
 export interface RagSource {
@@ -23,11 +25,119 @@ export interface RagSource {
   abstract: string;
   pdfUrl?: string | null;
   provenance: string;
+  studyType?: string | null;
+  quality?: number | null;
+  retracted?: boolean;
+  suggested?: string | null;
+  suggestReason?: string | null;
+}
+
+export type ScreeningDecision = "include" | "exclude" | "maybe";
+
+export interface ScreeningRow {
+  url: string;
+  decision: ScreeningDecision | null;
+  note: string | null;
+  suggested?: ScreeningDecision | null;
+  reason?: string | null;
+}
+
+export interface LoadedSession {
+  id: string;
+  query: string;
+  mode: string;
+  sources: RagSource[];
+  screening: ScreeningRow[];
+}
+
+export interface SessionRow {
+  id: string;
+  query: string;
+  mode: string;
+  created_at: string;
+}
+
+export interface LibraryRow {
+  title: string;
+  url: string;
+  authors: string | null;
+  year: number | null;
+  journal: string | null;
+  citation_count: number;
+  abstract: string | null;
+  doi: string | null;
+  source_type: string | null;
+  study_type: string | null;
+  quality: number | null;
+  retracted: number;
+}
+
+export interface LibraryAddPayload {
+  url: string;
+  title?: string;
+  authors?: string;
+  year?: number | null;
+  journal?: string;
+  citations?: number;
+  abstract?: string;
+  doi?: string | null;
+  source_type?: string | null;
+  study_type?: string | null;
+  quality?: number | null;
+  retracted?: boolean | number;
+}
+
+export interface RagToolPart {
+  name: string;
+  status: "ran" | "skipped" | "failed";
+  count?: number;
+  reason?: string;
+}
+
+export interface RagToolEvent {
+  call: number;
+  tool: string;
+  status: "running" | "ran" | "skipped" | "failed";
+  detail: string;
+  count: number | null;
+  ms: number | null;
+  parts?: RagToolPart[];
 }
 
 export interface RagMessage {
   role: "user" | "assistant" | "system";
   content: string;
+}
+
+export interface ReportExportPayload {
+  format: "md" | "pdf" | "csv";
+  markdown?: string;
+  csv?: string;
+  title: string;
+  suggestedName?: string;
+  meta?: string;
+}
+
+export interface ReportExportResult {
+  saved: boolean;
+  path?: string;
+  error?: string;
+}
+
+export interface PythonStackStatus {
+  name: string;
+  ok: boolean;
+  python?: string | null;
+  reason?: string | null;
+}
+
+export interface ReaderStatus {
+  browser: boolean;
+  crawl4ai: boolean;
+  crawl4aiReason?: string | null;
+  pythonStacks?: PythonStackStatus[];
+  playwright?: string | null;
+  playwrightReason?: string | null;
 }
 
 export interface RagBridge {
@@ -41,11 +151,24 @@ export interface RagBridge {
   stopPrompt: () => Promise<unknown>;
   research: (query: string, mode: string, maxTokens?: number) => Promise<{ id: string }>;
   stopResearch: () => Promise<unknown>;
+  setScreening: (
+    sessionId: string,
+    url: string,
+    decision: ScreeningDecision | null,
+    note: string | null,
+  ) => Promise<{ saved: boolean; error?: string }>;
+  listScreening: (sessionId: string) => Promise<ScreeningRow[]>;
+  loadSession: (sessionId: string) => Promise<LoadedSession | null>;
+  listSessions: (limit?: number) => Promise<SessionRow[]>;
+  libraryList: () => Promise<LibraryRow[]>;
+  libraryAdd: (paper: LibraryAddPayload) => Promise<{ saved: boolean; error?: string }>;
+  libraryRemove: (url: string) => Promise<{ saved: boolean; error?: string }>;
   onToken: (cb: (d: { id: string; token: string }) => void) => () => void;
-  onDone: (cb: (d: { id: string; text?: string; error?: string; sources?: RagSource[] }) => void) => () => void;
+  onDone: (cb: (d: { id: string; text?: string; error?: string; sources?: RagSource[]; sessionId?: string | null }) => void) => () => void;
   onStatus: (cb: (s: RagStatus) => void) => () => void;
   onProgress: (cb: (d: { id: string; stage: string; message: string }) => void) => () => void;
   onDownloadProgress: (cb: (p: { received: number; total: number; which?: string }) => void) => () => void;
+  onTool: (cb: (d: { id: string; event: RagToolEvent }) => void) => () => void;
   setKey: (provider: string, key: string) => Promise<{ saved: boolean }>;
   getKeys: () => Promise<{ provider: string; label: string; kind: string; has: boolean; masked: string }[]>;
   deleteKey: (provider: string) => Promise<unknown>;
@@ -89,9 +212,7 @@ export const CHAT_BACKENDS: KeyProvider[] = [
 ];
 
 export const KEY_PROVIDERS: KeyProvider[] = [
-  { id: "semantic-scholar", label: "Semantic Scholar", kind: "search", needsKey: true },
   { id: "jina", label: "Jina reader", kind: "fetch", needsKey: true },
-  { id: "exa", label: "Exa search", kind: "search", needsKey: true },
   { id: "tavily", label: "Tavily search", kind: "search", needsKey: true },
   { id: "openai", label: "OpenAI", kind: "chat", needsKey: true, defaultModel: "gpt-4o-mini" },
   { id: "openrouter", label: "OpenRouter", kind: "chat", needsKey: true, defaultModel: "openai/gpt-4o-mini" },
@@ -114,6 +235,14 @@ export const ragApi = {
   loadModel: () => bridge().loadModel(),
   stopPrompt: () => bridge().stopPrompt(),
   stopResearch: () => bridge().stopResearch(),
+  setScreening: (sessionId: string, url: string, decision: ScreeningDecision | null, note: string | null) =>
+    bridge().setScreening(sessionId, url, decision, note),
+  listScreening: (sessionId: string) => bridge().listScreening(sessionId),
+  loadSession: (sessionId: string) => bridge().loadSession(sessionId),
+  listSessions: (limit?: number) => bridge().listSessions(limit),
+  libraryList: () => bridge().libraryList(),
+  libraryAdd: (paper: LibraryAddPayload) => bridge().libraryAdd(paper),
+  libraryRemove: (url: string) => bridge().libraryRemove(url),
   onStatus: (cb: (s: RagStatus) => void) => bridge().onStatus(cb),
   onDownloadProgress: (cb: (p: { received: number; total: number; which?: string }) => void) =>
     bridge().onDownloadProgress(cb),
@@ -160,9 +289,10 @@ export const ragApi = {
     cbs: {
       onStage?: (stage: string, message: string) => void;
       onToken?: (t: string) => void;
+      onTool?: (ev: RagToolEvent) => void;
     } = {},
   ) =>
-    new Promise<{ sources: RagSource[]; answer: string }>((resolve, reject) => {
+    new Promise<{ sessionId: string | null; sources: RagSource[]; answer: string }>((resolve, reject) => {
       const b = bridge();
       let id = "";
       const offToken = b.onToken((d) => {
@@ -171,13 +301,17 @@ export const ragApi = {
       const offProg = b.onProgress((d) => {
         if (d.id === id && cbs.onStage) cbs.onStage(d.stage, d.message);
       });
+      const offTool = b.onTool((d) => {
+        if (d.id === id && cbs.onTool) cbs.onTool(d.event);
+      });
       const offDone = b.onDone((d) => {
         if (d.id !== id) return;
         offToken();
         offDone();
         offProg();
+        offTool();
         if (d.error) reject(new Error(d.error));
-        else resolve({ sources: d.sources ?? [], answer: d.text ?? "" });
+        else resolve({ sessionId: d.sessionId ?? null, sources: d.sources ?? [], answer: d.text ?? "" });
       });
       b.research(query, mode)
         .then((r) => {
@@ -187,7 +321,25 @@ export const ragApi = {
           offToken();
           offDone();
           offProg();
+          offTool();
           reject(e);
         });
     }),
+};
+
+// Report export runs in the main process (native save dialog + printToPDF).
+export const exportReport = (payload: ReportExportPayload): Promise<ReportExportResult> => {
+  const e = window.expozi;
+  if (!e?.exportReport) throw new Error("Export bridge unavailable (not running in Expozi desktop app)");
+  return e.exportReport(payload);
+};
+
+// Reader availability: built-in browser (always, in the desktop app) plus the
+// optional crawl4ai / system Chrome-Edge tiers, each with an honest reason.
+export const readerStatus = (): Promise<ReaderStatus> => {
+  const e = window.expozi;
+  if (!e?.readerStatus) {
+    return Promise.resolve({ browser: false, crawl4ai: false, crawl4aiReason: "desktop app required" });
+  }
+  return e.readerStatus();
 };

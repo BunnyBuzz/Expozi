@@ -1,45 +1,96 @@
-let embCtx = null;
-let embPath = null;
+// Local embedding facade. Prefers the fast ONNX model — multilingual-e5-small
+// (embed-onnx.cjs, tens of ms per passage); falls back to a user-installed
+// GGUF embedding model (embed-gguf.cjs) when ONNX is unavailable or fails to
+// load; when neither works the caller gets `false` and the pipeline runs
+// BM25-only.
+const gguf = require("./embed-gguf.cjs");
+const onnx = require("./embed-onnx.cjs");
 
-async function loadEmbeddingModel(modelPath) {
-  if (embPath === modelPath && embCtx) return;
-  const { getLlama } = await import("node-llama-cpp");
-  const llama = await getLlama();
-  const model = await llama.loadModel({ modelPath, embeddingContext: true });
-  embCtx = await model.createEmbeddingContext({ contextSize: 2048, ignoreMemorySafetyChecks: true });
-  embPath = modelPath;
+let kind = null; // "onnx" | "gguf" | null
+
+function setCacheDir(dir) {
+  onnx.setCacheDir(dir);
+}
+
+function onnxAvailable() {
+  return onnx.available();
+}
+
+// Load the local embedder. Returns "onnx" or "gguf".
+// `opts.onProgress` receives transformers.js progress events (model download).
+async function loadEmbeddingModel(modelPath, opts = {}) {
+  if (onnx.available()) {
+    try {
+      await onnx.load(opts.onProgress);
+      kind = "onnx";
+      return kind;
+    } catch (e) {
+      if (e && e.name === "AbortError") throw e;
+      // ONNX failed (no network for the first download, runtime error…) —
+      // fall through to a GGUF embedding model when one is installed.
+    }
+  }
+  if (modelPath) {
+    await gguf.loadEmbeddingModel(modelPath);
+    kind = "gguf";
+    return kind;
+  }
+  throw new Error(onnx.error() || "no local embedding backend available");
 }
 
 function hasEmbedding() {
-  return !!embCtx;
+  if (kind === "onnx") return onnx.ready();
+  if (kind === "gguf") return gguf.hasEmbedding();
+  return false;
 }
 
 function embedIdentity() {
-  if (!embPath) return "";
-  return String(embPath).split(/[\\/]/).pop() || "local";
+  if (kind === "onnx") return onnx.identity();
+  if (kind === "gguf") return gguf.embedIdentity();
+  return "";
 }
 
-// Embed one text. Long inputs are retried with progressively shorter text
-// (the embedding context has a fixed token budget) until they fit.
-async function embedOne(text) {
-  let t = String(text || "").trim().slice(0, 6000);
-  while (t.length > 0) {
-    try {
-      const e = await embCtx.getEmbeddingFor(t);
-      return Array.from(e.vector);
-    } catch (e) {
-      const msg = String((e && e.message) || e);
-      if (!/context size|too long|tokens/i.test(msg)) throw e;
-      t = t.slice(0, Math.floor(t.length / 2));
-    }
-  }
-  return null;
+function embedKind() {
+  return kind;
 }
 
-async function embedTexts(texts) {
-  const out = [];
-  for (const t of texts) out.push(await embedOne(t));
-  return out;
+function error() {
+  return kind === "onnx" ? onnx.error() : null;
 }
 
-module.exports = { loadEmbeddingModel, hasEmbedding, embedIdentity, embedTexts };
+async function embedTexts(texts, opts) {
+  if (kind === "onnx") return onnx.embedTexts(texts, opts);
+  return gguf.embedTexts(texts, opts);
+}
+
+// Instructed text for the active local model (e5 wants "query: " on queries
+// and "passage: " on passages). The GGUF fallback embeds raw text.
+function queryText(text) {
+  if (kind === "gguf") return gguf.queryText(text);
+  return onnx.queryText(text);
+}
+
+function passageText(text) {
+  if (kind === "gguf") return gguf.passageText(text);
+  return onnx.passageText(text);
+}
+
+function modelLabel() {
+  if (kind === "onnx") return onnx.modelLabel();
+  if (kind === "gguf") return gguf.modelLabel();
+  return "";
+}
+
+module.exports = {
+  setCacheDir,
+  onnxAvailable,
+  loadEmbeddingModel,
+  hasEmbedding,
+  embedIdentity,
+  embedKind,
+  error,
+  embedTexts,
+  queryText,
+  passageText,
+  modelLabel,
+};

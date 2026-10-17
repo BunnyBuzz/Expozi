@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("path");
 const rag = require("./rag/index.cjs");
+const { exportReport } = require("./export.cjs");
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -23,7 +24,12 @@ function createWindow() {
   });
 
   // Dev server when it's running, otherwise the packaged frontend build.
-  win.loadURL(DEV_URL).catch(() => win.loadFile(path.join(__dirname, "../dist/index.html")));
+  win.loadURL(DEV_URL).catch(() => {
+    if (win.isDestroyed()) return;
+    win.loadFile(path.join(__dirname, "../dist/index.html")).catch(() => {
+      /* window closed before the fallback load */
+    });
+  });
 
   // The renderer may load after initRag() already sent its status push; resend on every load.
   win.webContents.on("did-finish-load", () => {
@@ -38,6 +44,27 @@ function createWindow() {
 ipcMain.on("expozi:open-devtools", (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (win) win.webContents.openDevTools({ mode: "detach" });
+});
+
+ipcMain.handle("expozi:export-report", async (e, payload) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!app.isPackaged) {
+    console.log("[export]", (payload && payload.format) || "?", (payload && payload.title) || "");
+  }
+  try {
+    return await exportReport(win, payload || {});
+  } catch (err) {
+    console.error("[export] failed:", err);
+    return { saved: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle("expozi:reader-status", async () => {
+  try {
+    return await require("./rag/readers.cjs").readerAvailability();
+  } catch (err) {
+    return { browser: false, crawl4ai: false, crawl4aiReason: String((err && err.message) || err) };
+  }
 });
 
 let ragDirs = null;
@@ -161,11 +188,26 @@ function registerRagIpc() {
             /* noop */
           }
         },
+        onTool: (event) => {
+          if (!app.isPackaged) {
+            console.log("[rag:tool]", event.tool, event.status, event.detail || "");
+          }
+          try {
+            sender.send("rag:tool", { id, event });
+          } catch {
+            /* noop */
+          }
+        },
       })
       .then((result) => {
         if (!app.isPackaged) console.log("[rag:research] done:", (result.sources || []).length, "sources");
         try {
-          sender.send("rag:done", { id, text: result.answer, sources: result.sources });
+          sender.send("rag:done", {
+            id,
+            text: result.answer,
+            sources: result.sources,
+            sessionId: result.sessionId || null,
+          });
         } catch {
           /* noop */
         }
@@ -184,6 +226,17 @@ function registerRagIpc() {
     rag.stopResearch();
     return { stopped: true };
   });
+  // Screening workspace (stage 3): decisions persist per (session, url); a
+  // saved session can be reopened from Recents without re-running.
+  ipcMain.handle("rag:screening-set", (_e, payload) => rag.setScreening(payload || {}));
+  ipcMain.handle("rag:screening-list", (_e, payload) => rag.listScreening((payload || {}).sessionId));
+  ipcMain.handle("rag:session-load", (_e, payload) => rag.loadSession((payload || {}).sessionId));
+  // History + library (stage 4): Recents reads the sessions table, the library
+  // stores starred sources.
+  ipcMain.handle("rag:sessions-list", (_e, payload) => rag.listSessions((payload || {}).limit));
+  ipcMain.handle("rag:library-list", () => rag.libraryList());
+  ipcMain.handle("rag:library-add", (_e, payload) => rag.libraryAdd(payload || {}));
+  ipcMain.handle("rag:library-remove", (_e, payload) => rag.libraryRemove((payload || {}).url));
   ipcMain.handle("rag:set-key", async (_e, payload) => {
     const { setKey } = require("./rag/keys.cjs");
     setKey(payload.provider, payload.key || "");
@@ -214,6 +267,14 @@ async function initRag() {
 registerRagIpc();
 
 app.whenReady().then(() => {
+  if (!app.isPackaged) {
+    try {
+      const tools = require("./tools/index.cjs");
+      console.log("[tools] registered:", tools.names().join(", "));
+    } catch (e) {
+      console.error("[tools] registration failed:", e);
+    }
+  }
   createWindow();
   initRag();
   app.on("activate", () => {

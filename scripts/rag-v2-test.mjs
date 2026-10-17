@@ -29,20 +29,24 @@ function stubModule(relPath, exports) {
   require.cache[p] = { id: p, filename: p, loaded: true, exports };
 }
 stubModule("../electron/rag/sources/index.cjs", {
-  searchAll: async () => fakeDocs,
+  searchQueryDetailed: async () => ({ docs: fakeDocs, parts: [{ name: "arxiv", status: "ran", count: fakeDocs.length }] }),
+  searchManyDetailed: async () => ({ docs: fakeDocs, parts: [{ name: "arxiv", status: "ran", count: fakeDocs.length }] }),
   searchQuery: async () => fakeDocs,
   searchMany: async () => fakeDocs,
   interleaveByProvenance: (docs) => docs,
   normUrl: (u) => String(u),
 });
-stubModule("../electron/rag/fetch.cjs", {
-  fetchMany: async (urls) =>
+stubModule("../electron/rag/readers.cjs", {
+  readMany: async (urls) =>
     urls.map(
-      (_, i) =>
-        Array.from(
+      (_, i) => ({
+        text: Array.from(
           { length: 140 },
           (_, k) => `Sentence ${k} about fasting glucose insulin sensitivity and metabolic markers from source ${i}.`,
         ).join(" "),
+        via: "cheerio",
+        reason: null,
+      }),
     ),
   looksBlocked: () => false,
 });
@@ -105,6 +109,7 @@ const promptFn = async (messages, maxTokens, onToken) => {
 async function runCase(name, mode, depth) {
   const stages = [];
   const tokens = [];
+  const toolEvents = [];
   const result = await runResearch({
     query: "How does intermittent fasting affect metabolic markers?",
     mode,
@@ -112,6 +117,7 @@ async function runCase(name, mode, depth) {
     signal: undefined,
     onStage: (stage, message) => stages.push(`${stage}: ${message}`),
     onToken: (t) => tokens.push(t),
+    onTool: (ev) => toolEvents.push(ev),
     maxTokens: 500,
     keys: {},
     depth,
@@ -120,6 +126,15 @@ async function runCase(name, mode, depth) {
   console.log(`\n=== ${name} (${mode}/${depth}) ===`);
   console.log("stages:", stages.length, "| sample:", stages.slice(0, 3).map((s) => s.split(":")[0]).join(" > "));
   console.log("sources:", result.sources.length, "| answer chars:", answer.length, "| streamed chunks:", tokens.length);
+  const done = toolEvents.filter((e) => e.status !== "running");
+  console.log(
+    "tools:",
+    done.map((e) => `${e.tool}[${e.status}${e.count != null ? `:${e.count}` : ""}]`).join(" "),
+  );
+  const search = done.find((e) => e.tool === "search_papers" && e.status !== "running");
+  if (search && search.parts) {
+    console.log("search parts:", search.parts.map((p) => `${p.name}=${p.status}${p.reason ? `(${p.reason})` : ""}`).join(" · "));
+  }
   if (mode === "report") {
     const hasTitle = answer.startsWith("# ");
     const sections = (answer.match(/^## /gm) || []).length;
@@ -130,8 +145,31 @@ async function runCase(name, mode, depth) {
   } else if (mode === "agent") {
     console.log("answer head:", JSON.stringify(answer.slice(0, 140)));
   } else {
-    console.log("review check — no answer:", answer === "" || result.answer === null);
+    const suggested = result.sources.filter((s) => s.suggested).length;
+    let rows = 0;
+    try {
+      rows = db.all("SELECT COUNT(*) AS n FROM screening")[0]?.n ?? 0;
+    } catch {
+      rows = -1;
+    }
+    console.log(
+      "review check — no answer:",
+      answer === "" || result.answer === null,
+      "| suggestions:",
+      `${suggested}/${result.sources.length}`,
+      "| screening rows:",
+      rows,
+    );
   }
+  // Stage 4: enrichment fields must persist with the session so a reopened
+  // review shows the same badges as the live run.
+  let persisted = null;
+  try {
+    persisted = db.all("SELECT COUNT(*) AS n, SUM(quality IS NOT NULL) AS q FROM sources WHERE session_id=?", [result.sessionId])[0];
+  } catch {
+    persisted = null;
+  }
+  console.log("persist check — sources:", persisted?.n ?? -1, "| with quality:", persisted?.q ?? -1);
   return result;
 }
 

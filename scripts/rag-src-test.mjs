@@ -1,12 +1,14 @@
 // Probe the fixed source modules with a natural-language question.
+// Run with plain node: `node scripts/rag-src-test.mjs "question"`.
+// (The web tier's browser fallback needs Electron — the raw scraper and the
+// SearXNG pool still try here, and the parts line reports exactly what ran.
+// For the full web tier use: npx electron scripts/web-src-test.cjs)
 import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
 const { searchArxiv } = require("../electron/rag/sources/arxiv.cjs");
 const { searchPubmed } = require("../electron/rag/sources/pubmed.cjs");
-const { searchSemanticScholar } = require("../electron/rag/sources/semanticScholar.cjs");
-const { searchWeb } = require("../electron/rag/sources/searxng.cjs");
-const { searchQuery, interleaveByProvenance } = require("../electron/rag/sources/index.cjs");
+const { searchQueryDetailed, interleaveByProvenance } = require("../electron/rag/sources/index.cjs");
 
 const Q = process.argv[2] || "How does intermittent fasting affect metabolic markers?";
 
@@ -20,10 +22,14 @@ function show(name, r) {
 console.log("QUERY:", Q);
 show("arxiv (tokenised)", await searchArxiv(Q, 8));
 show("pubmed (efetch abstracts)", await searchPubmed(Q, 8));
-show("s2", await searchSemanticScholar(Q, 8));
-show("web", await searchWeb(Q, 5));
 
-const merged = await searchQuery(Q, {}, { perSource: 6, web: 4 });
-console.log(`\n== searchQuery merged: ${merged.length} docs`);
-show("interleaved fetch mix (first 12)", interleaveByProvenance(merged).slice(0, 12));
+const detailed = await searchQueryDetailed(Q, 6);
+console.log(
+  "\n== parts:",
+  detailed.parts
+    .map((p) => `${p.name}=${p.status}${p.count != null ? `(${p.count})` : ""}${p.reason ? ` [${String(p.reason).slice(0, 64)}]` : ""}`)
+    .join(" · "),
+);
+console.log(`== searchQueryDetailed merged: ${detailed.docs.length} docs`);
+show("interleaved fetch mix (first 12)", interleaveByProvenance(detailed.docs).slice(0, 12));
 process.exit(0);

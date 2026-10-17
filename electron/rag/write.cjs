@@ -6,6 +6,12 @@
 const SECTION_INSTRUCTION =
   "You are Expozi, a research assistant writing one section of a formal report. " +
   "Use ONLY the evidence below. Cite claims with the evidence numbers like [1], [2]. " +
+  "Prefer the strongest evidence (meta-analyses, systematic reviews, randomized trials) " +
+  "and treat web pages as a marked supplement. " +
+  "State exact figures (effect sizes, percentages, sample sizes, dates) only when the " +
+  "evidence states them; never invent numbers and never hide a number behind vague words " +
+  'like "several studies show". ' +
+  "If the evidence conflicts, say so explicitly and note which side has the stronger designs. " +
   "Write 1-3 focused paragraphs. Do not repeat the section title as a sentence " +
   "and do not write other sections.";
 
@@ -52,9 +58,9 @@ async function writeAbstractAndConclusion(promptFn, { query, body, maxTokens = 3
       ],
       maxTokens,
     );
-    return splitAbstractConclusion(String(raw || "").trim());
-  } catch {
-    return { abstract: "", conclusion: "" };
+    return { ...splitAbstractConclusion(String(raw || "").trim()), error: null };
+  } catch (err) {
+    return { abstract: "", conclusion: "", error: String((err && err.message) || err) };
   }
 }
 
