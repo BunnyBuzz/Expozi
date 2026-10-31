@@ -16,8 +16,10 @@
 //
 // Trace event shape (sent through ctx.emit and forwarded to the renderer):
 //   { call, tool, status, detail, count, ms, parts? }
-//   status: "running" | "ran" | "skipped" | "failed"
+//   status: "running" | "progress" | "ran" | "skipped" | "failed"
 //   parts: [{ name, status, count?, reason? }] — per-source detail for search.
+// Tools may emit live progress for long loops via ctx.progress("4/13 read…");
+// progress events update the same trace line in the renderer.
 
 const tools = new Map();
 let callSeq = 0;
@@ -97,7 +99,11 @@ async function run(name, input, ctx = {}) {
   emit({ call, tool: name, status: "running", detail: "", count: null, ms: null });
 
   try {
-    const res = (await tool.run(input || {}, ctx)) || {};
+    const callCtx = Object.assign({}, ctx, {
+      progress: (detail) =>
+        emit({ call, tool: name, status: "progress", detail: String(detail || ""), count: null, ms: null }),
+    });
+    const res = (await tool.run(input || {}, callCtx)) || {};
     const base = {
       call,
       tool: name,

@@ -17,7 +17,7 @@ import type { HistoryItem } from "./Sidebar";
 export type HomeMode = "agent" | "report" | "review";
 
 interface Props {
-  onSubmit: (q: string) => void;
+  onSubmit: (q: string, opts?: { template?: string; depth?: string }) => void;
   history: HistoryItem[];
   mode: HomeMode;
   model: string;
@@ -48,14 +48,20 @@ const PLACEHOLDERS: Record<HomeMode, string> = {
 export default function HomeView({ onSubmit, history, mode, model, onModeChange, onAddToProject }: Props) {
   const [preset, setPreset] = useState<string | undefined>(undefined);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [template, setTemplate] = useState<"General Review" | "1-Page Overview" | "Research Gap Analysis">("General Review");
+  const [depth, setDepth] = useState<"fast" | "balanced" | "comprehensive">("balanced");
   const active = MODES.find((m) => m.id === mode) ?? MODES[0];
+
+  const handleComposerSubmit = (q: string) => {
+    onSubmit(q, { template, depth });
+  };
 
   return (
     <div className="flex flex-1 items-start justify-center overflow-y-auto bg-white">
       <div className="w-full max-w-[740px] px-6 pb-10 pt-[9vh]">
         {/* composer card with workflow switcher */}
         <div className="rounded-2xl border border-[#14666e] shadow-[0_16px_48px_rgba(20,102,110,0.16)]">
-          <div className="relative rounded-t-[15px] bg-[#14666e] px-3.5 py-2.5">
+          <div className="relative flex flex-wrap items-center justify-between gap-2 rounded-t-[15px] bg-[#14666e] px-3.5 py-2.5">
             <button
               onClick={() => setMenuOpen((o) => !o)}
               className="flex items-center gap-2 rounded-lg border border-white/40 px-3 py-1.5 text-sm font-medium text-white hover:bg-white/10"
@@ -64,6 +70,33 @@ export default function HomeView({ onSubmit, history, mode, model, onModeChange,
               {active.label}
               <ChevronDown size={16} className={`transition-transform ${menuOpen ? "rotate-180" : ""}`} />
             </button>
+
+            {/* Template and Depth selectors for Report Mode */}
+            {mode === "report" && (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                {/* Template selector */}
+                <select
+                  value={template}
+                  onChange={(e) => setTemplate(e.target.value as any)}
+                  className="rounded-lg border border-white/30 bg-teal-800/80 px-2.5 py-1 font-medium text-white shadow-2xs outline-none"
+                >
+                  <option value="General Review" className="text-gray-900 bg-white">General Review (default)</option>
+                  <option value="1-Page Overview" className="text-gray-900 bg-white">1-Page Overview</option>
+                  <option value="Research Gap Analysis" className="text-gray-900 bg-white">Research Gap Analysis</option>
+                </select>
+
+                {/* Depth selector */}
+                <select
+                  value={depth}
+                  onChange={(e) => setDepth(e.target.value as any)}
+                  className="rounded-lg border border-white/30 bg-teal-800/80 px-2.5 py-1 font-medium text-white shadow-2xs outline-none"
+                >
+                  <option value="fast" className="text-gray-900 bg-white">Fast (25 papers · top 5)</option>
+                  <option value="balanced" className="text-gray-900 bg-white">Balanced (50 papers · top 10)</option>
+                  <option value="comprehensive" className="text-gray-900 bg-white">Comprehensive (135 papers · top 20)</option>
+                </select>
+              </div>
+            )}
             {menuOpen && (
               <div className="absolute left-4 top-full z-30 mt-1.5 w-[300px] rounded-xl border border-gray-200 bg-white p-2 shadow-xl">
                 <p className="px-3 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-gray-400">
@@ -89,7 +122,7 @@ export default function HomeView({ onSubmit, history, mode, model, onModeChange,
           </div>
           <div className="rounded-b-[15px] bg-white p-4">
             <Composer
-              onSubmit={onSubmit}
+              onSubmit={handleComposerSubmit}
               preset={preset}
               bare
               rows={5}
@@ -97,6 +130,7 @@ export default function HomeView({ onSubmit, history, mode, model, onModeChange,
               showProject
               onAddToProject={onAddToProject}
               placeholder={PLACEHOLDERS[mode]}
+              submitLabel={mode === "report" ? "Generate Report" : undefined}
               autoFocus
             />
           </div>

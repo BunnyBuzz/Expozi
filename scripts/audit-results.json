@@ -1,0 +1,319 @@
+{
+  "agent": {
+    "checkpoint1": {
+      "pass": true,
+      "queryD": {
+        "isSmallTalk": true,
+        "isDirect": true,
+        "toolCalls": 0
+      },
+      "queryC": {
+        "isAmbiguous": true,
+        "isClarification": true,
+        "toolCalls": 0,
+        "question": "Could you clarify if you are interested in acute neurochemical effects, clinical trials in treatment-resistant depression, or therapeutic mechanisms?"
+      },
+      "queryA": {
+        "isSmallTalk": false,
+        "isAmbiguous": false
+      },
+      "queryB": {
+        "isSmallTalk": false,
+        "isAmbiguous": false
+      }
+    },
+    "checkpoint2": {
+      "pass": true,
+      "planA": {
+        "core_question": "Does intermittent fasting significantly improve insulin sensitivity and glycemic control in humans?",
+        "angles": [
+          "Effects of time-restricted feeding on insulin resistance (HOMA-IR)",
+          "Cellular autophagy and metabolic switching during intermittent fasting",
+          "Comparative efficacy of intermittent fasting versus continuous caloric restriction"
+        ],
+        "queries": [
+          "intermittent fasting insulin sensitivity randomized controlled trial",
+          "time restricted feeding HOMA-IR glycemic control",
+          "intermittent fasting vs caloric restriction insulin resistance",
+          "fasting induced metabolic switching insulin biomarkers"
+        ],
+        "depth": "standard"
+      },
+      "planB": {
+        "core_question": "What specific neurobiological and synaptic mechanisms underlie working memory consolidation impairments caused by sleep deprivation?",
+        "angles": [
+          "Prefrontal cortex and hippocampal synaptic plasticity disruptions during sleep deprivation",
+          "Neurotransmitter and neuromodulator alterations (adenosine, dopamine, acetylcholine)",
+          "Microglial activation and neuroinflammation in sleep-deprived memory consolidation"
+        ],
+        "queries": [
+          "sleep deprivation working memory consolidation neurological mechanisms",
+          "prefrontal cortex synaptic plasticity sleep loss memory",
+          "adenosine accumulation working memory sleep deprivation",
+          "hippocampal LTP sleep deprivation memory consolidation",
+          "sleep deprivation neuroinflammation working memory impairment"
+        ],
+        "depth": "deep"
+      }
+    },
+    "checkpoint3": {
+      "pass": false,
+      "summary": "11 results · Semantic Scholar: rate limited · PubMed(11) · OpenAlex: OpenAlex HTTP 429 · 5490ms",
+      "totalDocs": 11,
+      "activeSources": 1,
+      "counts": {
+        "Semantic Scholar": 0,
+        "arXiv": 0,
+        "PubMed": 11,
+        "OpenAlex": 0
+      },
+      "errors": {
+        "Semantic Scholar": "rate limited",
+        "OpenAlex": "OpenAlex HTTP 429",
+        "PubMed": "PubMed HTTP 429"
+      },
+      "dupes": 0,
+      "isSorted": true,
+      "timingMs": 5490
+    },
+    "checkpoint4": {
+      "pass": true,
+      "gapsFound": 2,
+      "refinedQueries": [
+        "fMRI prefrontal hippocampal functional connectivity sleep deprivation working memory",
+        "neuroinflammation cytokines sleep loss working memory consolidation"
+      ],
+      "round1Docs": 3,
+      "addedRound2": 1,
+      "totalMerged": 4
+    },
+    "checkpoint5": {
+      "pass": true,
+      "totalRead": 8,
+      "withText": 8,
+      "abstractOnlyCount": 0,
+      "maxConcurrency": 3,
+      "usesPdfjs": false,
+      "note": "PDFs currently routed via Jina Reader rather than local pdfjs-dist"
+    },
+    "checkpoint6": {
+      "pass": true,
+      "chunksCount": 1,
+      "allChunksValidWordCount": true,
+      "bm25Populated": true,
+      "retrievedCount": 1,
+      "vectorType": "In-memory Cosine & ONNX / BM25 fallback (hnswlib not native addon)"
+    },
+    "checkpoint7": {
+      "pass": true,
+      "topSelectedCount": 1,
+      "scoresValid": true
+    },
+    "checkpoint8": {
+      "pass": true,
+      "citationsCount": 6,
+      "wordCount": 78,
+      "citationIntegrity": true
+    },
+    "checkpoint9": {
+      "pass": true,
+      "cards": [
+        {
+          "title": "Effect of two types of time-restricted eating on glycemic, lipid indices, and weight in women with polycystic ovary syndrome: a randomized controlled trial.",
+          "authors": [
+            "Aminian M",
+            "Hajshafiha M",
+            "Heidari M",
+            "Daneghian S"
+          ],
+          "year": 2026,
+          "citations": 0,
+          "source": "PubMed",
+          "hasPdf": false,
+          "isAbstractOnly": true,
+          "usedSnippet": "Intermittent fasting reduces HOMA-IR significantly..."
+        },
+        {
+          "title": "The effect of intermittent fasting on insulin resistance, lipid profile, and inflammation on metabolic syndrome: a GRADE assessed systematic review and meta-analysis.",
+          "authors": [
+            "Lu L",
+            "Chen X",
+            "Liou S",
+            "Weng X"
+          ],
+          "year": 2025,
+          "citations": 0,
+          "source": "PubMed",
+          "hasPdf": false,
+          "isAbstractOnly": true,
+          "usedSnippet": "Intermittent fasting reduces HOMA-IR significantly..."
+        },
+        {
+          "title": "Intermittent fasting improves metabolic outcomes in metabolic syndrome: a systematic review and meta-analysis with GRADE evaluation.",
+          "authors": [
+            "Song Q",
+            "Almutairi ASH",
+            "Almutairi MFA",
+            "Jamilian P",
+            "Abu-Zaid A"
+          ],
+          "year": 2025,
+          "citations": 0,
+          "source": "PubMed",
+          "hasPdf": false,
+          "isAbstractOnly": true,
+          "usedSnippet": "Intermittent fasting reduces HOMA-IR significantly..."
+        }
+      ]
+    },
+    "checkpoint10": {
+      "pass": true,
+      "didNotSearchAgain": true,
+      "usedSessionIndex": true,
+      "didRunNewSearchWhenRequested": true
+    },
+    "checkpoint11": {
+      "pass": false,
+      "memoryMatchStrict": null,
+      "memoryMatchKeywords": null,
+      "failureReason": "Jaccard lexical token similarity (0.18) below threshold (0.7) for semantically related query 'How does fasting affect blood sugar levels?'"
+    },
+    "checkpoint12": {
+      "pass": true,
+      "scenarioD_pass": true,
+      "scenarioC_pass": true
+    }
+  },
+  "report": {
+    "checkpointR1": {
+      "pass": true,
+      "templates": [
+        "General Review",
+        "1-Page Overview",
+        "Research Gap Analysis"
+      ],
+      "depths": [
+        {
+          "id": "fast",
+          "pool": 25,
+          "screened": 5
+        },
+        {
+          "id": "balanced",
+          "pool": 50,
+          "screened": 10
+        },
+        {
+          "id": "comprehensive",
+          "pool": 135,
+          "screened": 20
+        }
+      ]
+    },
+    "checkpointR2": {
+      "pass": true,
+      "summary": "14 sources found across scholarly databases",
+      "gatheredCount": 14,
+      "firstSource": "Effectiveness of app-based cognitive behavioral therapy for insomnia on preventing major depressive disorder in youth with insomnia and subclinical depression: A randomized clinical trial."
+    },
+    "checkpointR3": {
+      "pass": true,
+      "criteriaR1": {
+        "include": [
+          "Adult human participants diagnosed with primary or chronic insomnia",
+          "Structured Cognitive Behavioral Therapy for Insomnia (CBT-I) intervention",
+          "Validated sleep outcome measures (PSQI, sleep efficiency, ISI, sleep onset latency)"
+        ],
+        "exclude": [
+          "Pediatric or animal sleep models",
+          "Pharmacotherapy-only interventions without behavioral components",
+          "Uncontrolled case reports or non-peer reviewed editorials"
+        ],
+        "study_types": [
+          "Randomized controlled trial (RCT)",
+          "Systematic review",
+          "Meta-analysis"
+        ]
+      },
+      "criteriaR2": {
+        "include": [
+          "Human clinical trials evaluating EPA/DHA omega-3 fatty acid supplementation",
+          "Assessed major adverse cardiovascular events (MACE), myocardial infarction, or cardiovascular mortality",
+          "Minimum study duration of 12 months with standardized dosing"
+        ],
+        "exclude": [
+          "Dietary fish consumption studies without quantified supplemental dosing",
+          "Exclusively in vitro or rodent atherosclerosis models",
+          "Studies lacking defined cardiovascular endpoints"
+        ],
+        "study_types": [
+          "Randomized controlled trial",
+          "Meta-analysis",
+          "Prospective cohort"
+        ]
+      },
+      "modifiedIncludeLength": 4
+    },
+    "checkpointR4": {
+      "pass": true,
+      "includedCount": 2,
+      "excludedCount": 1,
+      "excludedReason": "Paper focuses exclusively on cardiac biomarkers with zero sleep or CBT interventions.",
+      "excludedQuote": "This study evaluates troponin and BNP levels in 80 emergency room patients."
+    },
+    "checkpointR5": {
+      "pass": true,
+      "readTotal": 2,
+      "abstractOnlyCount": 2
+    },
+    "checkpointR6": {
+      "pass": true,
+      "colsR1": [
+        "CBT protocol & duration",
+        "Sample size & population",
+        "Primary outcome measure",
+        "Effect sizes & sleep efficiency",
+        "Study limitations"
+      ],
+      "colsR2": [
+        "Omega-3 formulation & dosage",
+        "Patient cohort & baseline risk",
+        "Primary cardiovascular endpoint",
+        "Hazard ratio & statistics",
+        "Adverse events & bleeding risk"
+      ],
+      "totalExtractedCells": 10
+    },
+    "checkpointR7": {
+      "pass": true,
+      "hasTitle": true,
+      "hasAbstract": true,
+      "hasMethodsWithNumbers": true,
+      "hasMoreOnMethods": true,
+      "hasCharacteristicsTable": true,
+      "hasThematicResults": true,
+      "hasReferences": true,
+      "citationsMatch": true
+    },
+    "checkpointR8": {
+      "pass": true,
+      "qaAnswer": "Based on the extracted data, Study [1] exhibited the strongest effect size with d = 1.12 on the Insomnia Severity Index."
+    },
+    "checkpointR9": {
+      "pass": true,
+      "versionCount": 4,
+      "latestId": 4
+    },
+    "checkpointR10": {
+      "pass": true,
+      "docxOk": true,
+      "docxFileValid": true,
+      "txtValid": true
+    },
+    "checkpointR11": {
+      "pass": true,
+      "warningTriggeredOnLowPapers": true,
+      "fallbackShowsTable": true
+    }
+  }
+}

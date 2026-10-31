@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   query TEXT,
   mode TEXT,
+  answer TEXT,
   project_id INTEGER REFERENCES projects(id),
   created_at TEXT DEFAULT (datetime('now'))
 );
@@ -89,6 +90,26 @@ CREATE TABLE IF NOT EXISTS embed_cache (
   vec TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS report_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT,
+  content TEXT,
+  template TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_report_versions_session ON report_versions(session_id);
+CREATE TABLE IF NOT EXISTS extractions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT,
+  url TEXT,
+  column_name TEXT,
+  value TEXT,
+  supporting_quote TEXT,
+  confidence TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(session_id, url, column_name)
+);
+CREATE INDEX IF NOT EXISTS idx_extractions_session ON extractions(session_id);
 `;
 
 async function openDb(file) {
@@ -118,6 +139,9 @@ async function openDb(file) {
     ["study_type", "TEXT"],
     ["quality", "REAL"],
     ["retracted", "INTEGER DEFAULT 0"],
+  ]);
+  ensureColumns(db, "sessions", [
+    ["answer", "TEXT"],
   ]);
   save();
   return db;
@@ -206,4 +230,47 @@ function runMany(sql, paramsList) {
   return db.getRowsModified();
 }
 
-module.exports = { openDb, all, run, runMany, save };
+function saveReportVersion(sessionId, content, template = "general") {
+  if (!sessionId || !content) return;
+  run("INSERT INTO report_versions (session_id, content, template) VALUES (?, ?, ?)", [
+    sessionId,
+    content,
+    template,
+  ]);
+}
+
+function listReportVersions(sessionId) {
+  if (!sessionId) return [];
+  return all(
+    "SELECT id, session_id, content, template, created_at FROM report_versions WHERE session_id=? ORDER BY created_at ASC, id ASC",
+    [sessionId],
+  );
+}
+
+function saveExtraction(sessionId, url, columnName, value, supportingQuote = "", confidence = "medium") {
+  if (!sessionId || !url || !columnName) return;
+  run(
+    "INSERT OR REPLACE INTO extractions (session_id, url, column_name, value, supporting_quote, confidence) VALUES (?, ?, ?, ?, ?, ?)",
+    [sessionId, url, columnName, value, supportingQuote, confidence],
+  );
+}
+
+function listExtractions(sessionId) {
+  if (!sessionId) return [];
+  return all(
+    "SELECT id, session_id, url, column_name, value, supporting_quote, confidence, created_at FROM extractions WHERE session_id=? ORDER BY id ASC",
+    [sessionId],
+  );
+}
+
+module.exports = {
+  openDb,
+  all,
+  run,
+  runMany,
+  save,
+  saveReportVersion,
+  listReportVersions,
+  saveExtraction,
+  listExtractions,
+};

@@ -13,6 +13,7 @@ interface Props {
   thinking?: boolean;
   onStop?: () => void;
   onAddToProject?: (text: string) => void;
+  submitLabel?: string;
 }
 
 export default function Composer({
@@ -27,6 +28,7 @@ export default function Composer({
   thinking = false,
   onStop,
   onAddToProject,
+  submitLabel,
 }: Props) {
   const [value, setValue] = useState("");
 
@@ -98,10 +100,13 @@ export default function Composer({
             <button
               onClick={submit}
               disabled={!value.trim()}
-              className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-40"
-              title="Send"
+              className={`flex items-center justify-center rounded-xl bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-40 transition-colors shadow-2xs ${
+                submitLabel ? "px-3.5 py-2 gap-1.5 text-xs font-semibold" : "h-9 w-9"
+              }`}
+              title={submitLabel || "Send"}
             >
-              <ArrowUp size={18} strokeWidth={2.2} />
+              {submitLabel && <span>{submitLabel}</span>}
+              <ArrowUp size={16} strokeWidth={2.2} />
             </button>
           )}
         </div>

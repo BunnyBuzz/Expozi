@@ -36,6 +36,14 @@ async function testProvider(id, { key, baseURL, model }) {
         if (res.status === 200) return { ok: true, message: "Endpoint reachable" };
         return { ok: false, message: `Unreachable (HTTP ${res.status})` };
       }
+      case "groq": {
+        if (!key) return { ok: false, message: "No key saved" };
+        const res = await fetch("https://api.groq.com/openai/v1/models", {
+          headers: { Authorization: `Bearer ${key}` },
+        });
+        if (res.status === 200) return { ok: true, message: "Key accepted" };
+        return { ok: false, message: `Rejected (HTTP ${res.status})` };
+      }
       case "anthropic": {
         if (!key) return { ok: false, message: "No key saved" };
         const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -70,6 +78,7 @@ const PROVIDERS = [
   { id: "jina", label: "Jina reader", kind: "fetch", needsKey: true },
   { id: "tavily", label: "Tavily search", kind: "search", needsKey: true },
   { id: "openai", label: "OpenAI", kind: "chat", needsKey: true, defaultModel: "gpt-4o-mini" },
+  { id: "groq", label: "Groq", kind: "chat", needsKey: true, defaultModel: "openai/gpt-oss-120b" },
   { id: "openrouter", label: "OpenRouter", kind: "chat", needsKey: true, defaultModel: "openai/gpt-4o-mini" },
   { id: "anthropic", label: "Anthropic", kind: "chat", needsKey: true, defaultModel: "claude-haiku-4-5" },
   { id: "gemini", label: "Google Gemini", kind: "chat", needsKey: true, defaultModel: "gemini-3.5-flash" },

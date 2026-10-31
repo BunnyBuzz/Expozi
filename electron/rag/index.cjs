@@ -1,11 +1,16 @@
 const fs = require("fs");
 const path = require("path");
+const { randomUUID } = require("crypto");
 const { ragDirs, ensureDirs } = require("./paths.cjs");
 const { openDb, run: dbRun, all: dbAll } = require("./db.cjs");
 const { scanModels, loadModelFile, promptStream } = require("./llm.cjs");
 const { loadEmbeddingModel, onnxAvailable, setCacheDir, error: embedBackendError } = require("./embed.cjs");
 const { downloadModel, downloadModelFile, cancelDownload, MODELS, MODEL_NAME } = require("./download.cjs");
-const { runResearch: runResearchPipeline } = require("./pipeline.cjs");
+const { runResearch: runResearchPipeline, runV2: runV2Pipeline } = require("./pipeline.cjs");
+const { runAgent } = require("./agent.cjs");
+const { runResearchAgent } = require("./agentFlow.cjs");
+const { runReportPipeline, answerReportFollowUp } = require("./reportFlow.cjs");
+const { findSimilarPastSession } = require("./sessionMemory.cjs");
 const { chatComplete } = require("./backends.cjs");
 const { getKey, mask } = require("./keys.cjs");
 const { testProvider, PROVIDERS } = require("./providers.cjs");
@@ -265,7 +270,7 @@ function mapSourceRow(r) {
 
 function loadSession(sessionId) {
   try {
-    const s = dbAll("SELECT id, query, mode FROM sessions WHERE id=?", [sessionId])[0];
+    const s = dbAll("SELECT id, query, mode, answer FROM sessions WHERE id=?", [sessionId])[0];
     if (!s) return null;
     const screening = listScreening(sessionId);
     const rows = [];
@@ -290,6 +295,7 @@ function loadSession(sessionId) {
       id: s.id,
       query: s.query,
       mode: s.mode,
+      answer: s.answer || "",
       sources: rows.map(mapSourceRow),
       screening,
     };
@@ -450,7 +456,18 @@ function stopPrompt() {
   }
 }
 
-async function runResearch({ query, mode, maxTokens, onStage, onToken, onTool, send }) {
+async function runResearch({
+  query,
+  mode,
+  maxTokens,
+  onStage,
+  onToken,
+  onTool,
+  send,
+  template,
+  depth: depthParam,
+  criteria,
+}) {
   researchAborter = new AbortController();
   const cfg = getBackend();
   const depth = effectiveDepth(cfg);
@@ -496,7 +513,7 @@ async function runResearch({ query, mode, maxTokens, onStage, onToken, onTool, s
     return promptStream(messages, { onToken: tk, signal: researchAborter.signal, maxTokens: mt });
   };
   try {
-    return await runResearchPipeline({
+    const args = {
       query,
       mode,
       promptFn,
@@ -507,10 +524,127 @@ async function runResearch({ query, mode, maxTokens, onStage, onToken, onTool, s
       maxTokens: maxTokens || 500,
       keys,
       depth,
+    };
+    // Research Agent mode (Complete Elicit-style flow)
+    if (mode === "agent") {
+      const sessionId = randomUUID();
+      return await runResearchAgent({
+        ...args,
+        sessionId,
+        keys: {
+          ...keys,
+          semanticScholar: getKey("semantic-scholar"),
+          jina: getKey("jina"),
+        },
+      });
+    }
+    // Report Mode (Complete 6-step Systematic Review Report flow)
+    if (mode === "report") {
+      const sessionId = randomUUID();
+      return await runReportPipeline({
+        ...args,
+        sessionId,
+        template: template || "General Review",
+        depth: depthParam || depth || "balanced",
+        criteria: criteria || null,
+        onStepData: (data) => {
+          try {
+            if (send) send("rag:report-step-data", { id: sessionId, data });
+          } catch {}
+        },
+        keys: {
+          ...keys,
+          semanticScholar: getKey("semantic-scholar"),
+          jina: getKey("jina"),
+        },
+      });
+    }
+    return await runResearchPipeline(args);
+  } finally {
+    researchAborter = null;
+  }
+}
+
+function checkPastSession(query) {
+  return findSimilarPastSession(query);
+}
+
+async function runAgentFollowUp({ sessionId, query, maxTokens, onToken, onTool, send }) {
+  researchAborter = new AbortController();
+  const cfg = getBackend();
+  const keys = { jina: getKey("jina"), semanticScholar: getKey("semantic-scholar") };
+  const promptFn = async (messages, mt, tk) => {
+    if (cfg.backend && cfg.backend !== "local") {
+      return await chatComplete({
+        backend: cfg.backend,
+        baseURL: cfg.baseURL,
+        key: getKey(cfg.backend),
+        model: cfg.apiModel,
+        messages,
+        maxTokens: mt || maxTokens || 600,
+        temperature: 0.2,
+        onToken: tk,
+        signal: researchAborter.signal,
+      });
+    }
+    return promptStream(messages, { onToken: tk, signal: researchAborter.signal, maxTokens: mt || maxTokens || 600 });
+  };
+  try {
+    return await runResearchAgent({
+      sessionId,
+      query,
+      promptFn,
+      signal: researchAborter.signal,
+      onToken,
+      onTool,
+      keys,
+      isFollowUp: true,
     });
   } finally {
     researchAborter = null;
   }
+}
+
+async function runReportQA({ sessionId, query, followUpQuery, extractionMatrix, reportText, onToken }) {
+  researchAborter = new AbortController();
+  const cfg = getBackend();
+  const promptFn = (messages, mt, tk) => {
+    if (cfg.backend && cfg.backend !== "local") {
+      return chatComplete({
+        backend: cfg.backend,
+        baseURL: cfg.baseURL,
+        key: getKey(cfg.backend),
+        model: cfg.apiModel,
+        messages,
+        maxTokens: mt || 500,
+        temperature: 0.3,
+        onToken: tk,
+        signal: researchAborter.signal,
+      });
+    }
+    return promptStream(messages, { onToken: tk, signal: researchAborter.signal, maxTokens: mt || 500 });
+  };
+  try {
+    return await answerReportFollowUp(promptFn, {
+      query,
+      followUpQuery,
+      extractionMatrix,
+      reportText,
+      onToken,
+    });
+  } finally {
+    researchAborter = null;
+  }
+}
+
+function getReportVersions(sessionId) {
+  const { listReportVersions } = require("./db.cjs");
+  return listReportVersions(sessionId);
+}
+
+function getReportExtractions(sessionId) {
+  const { listExtractions } = require("./db.cjs");
+  return listExtractions(sessionId);
 }
 
 function stopResearch() {
@@ -535,6 +669,11 @@ module.exports = {
   stopPrompt,
   runResearch,
   stopResearch,
+  checkPastSession,
+  runAgentFollowUp,
+  runReportQA,
+  getReportVersions,
+  getReportExtractions,
   getBackend,
   setBackend,
   listKeys,

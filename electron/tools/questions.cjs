@@ -1,5 +1,5 @@
 // Perspective / question generation tools (STORM's perspective-guided questioning).
-const { genPerspectives, genQuestions } = require("../rag/plan.cjs");
+const { genPerspectives, genQuestions, refineQuestions } = require("../rag/plan.cjs");
 const { define } = require("./registry.cjs");
 
 define({
@@ -40,6 +40,32 @@ define({
       data: questions,
       count: questions.length,
       detail: questions.length ? `${questions.length} questions` : "no new questions",
+    };
+  },
+});
+
+define({
+  name: "refine_questions",
+  description:
+    "Review what the first search round found and generate follow-up queries that fill coverage gaps (round 2 of search → refine → search).",
+  input: {
+    query: "string",
+    cards: "string — snippet cards of what was found",
+    asked: "string[] — queries already searched (deduped)",
+    max: "number — max follow-up queries (default 3)",
+  },
+  async run(input, ctx) {
+    const questions = await refineQuestions(
+      ctx.promptFn,
+      input.query,
+      input.cards || "",
+      input.asked || [],
+      input.max || 3,
+    );
+    return {
+      data: questions,
+      count: questions.length,
+      detail: questions.length ? `${questions.length} follow-up queries` : "no gaps found",
     };
   },
 });

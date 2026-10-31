@@ -42,3 +42,12 @@ On startup:
 2. Scan ./models/ for .gguf files
 3. If found → load with node-llama-cpp
 4. If not found → show modal with download links to recommended models
+
+### Storage
+All rag storage lives in ONE root folder — models, the sqlite DB and the cache:
+- default: `%APPDATA%\expozi\rag`
+- override: `%APPDATA%\expozi\rag-location.json` = `{ "ragDir": "D:\\Expozi\\data" }`
+  (honoured by the dev app and installed app alike; falls back to the default
+  if the pointer or the folder is unreadable)
+Inside the root: `models/` (GGUFs + `onnx/`), `data/expozi.sqlite`,
+`embed-cache/`. Resolution lives in `electron/rag/paths.cjs`.

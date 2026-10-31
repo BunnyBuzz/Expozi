@@ -177,27 +177,97 @@ function slugify(s) {
     .slice(0, 60);
 }
 
+async function writeDocx({ markdown, title, outPath }) {
+  const { Document, Packer, Paragraph, HeadingLevel } = require("docx");
+  const lines = String(markdown || "").split(/\r?\n/);
+  const children = [];
+  if (title) {
+    children.push(
+      new Paragraph({
+        text: title,
+        heading: HeadingLevel.TITLE,
+        spacing: { after: 300 },
+      }),
+    );
+  }
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      children.push(new Paragraph({ text: "" }));
+      continue;
+    }
+    if (trimmed.startsWith("# ")) {
+      children.push(
+        new Paragraph({
+          text: trimmed.slice(2),
+          heading: HeadingLevel.HEADING_1,
+          spacing: { before: 240, after: 120 },
+        }),
+      );
+    } else if (trimmed.startsWith("## ")) {
+      children.push(
+        new Paragraph({
+          text: trimmed.slice(3),
+          heading: HeadingLevel.HEADING_2,
+          spacing: { before: 200, after: 100 },
+        }),
+      );
+    } else if (trimmed.startsWith("### ")) {
+      children.push(
+        new Paragraph({
+          text: trimmed.slice(4),
+          heading: HeadingLevel.HEADING_3,
+          spacing: { before: 160, after: 80 },
+        }),
+      );
+    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      children.push(new Paragraph({ text: trimmed.slice(2), bullet: { level: 0 } }));
+    } else {
+      children.push(new Paragraph({ text: trimmed, spacing: { after: 120 } }));
+    }
+  }
+  const doc = new Document({ sections: [{ properties: {}, children }] });
+  const buffer = await Packer.toBuffer(doc);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, buffer);
+}
+
 // Shows the native save dialog, then writes the export in the chosen format:
-// .md / .pdf for reports, .csv for screening sets.
+// .md / .pdf / .docx / .txt for reports, .csv for screening sets and extraction tables.
 // Returns { saved: false } when the user cancels, { saved: true, path } on file.
 async function exportReport(parentWin, { format, markdown, csv, title, suggestedName, meta } = {}) {
-  const ext = format === "pdf" ? "pdf" : format === "csv" ? "csv" : "md";
+  const ext =
+    format === "pdf"
+      ? "pdf"
+      : format === "docx"
+        ? "docx"
+        : format === "txt"
+          ? "txt"
+          : format === "csv"
+            ? "csv"
+            : "md";
   const name = (suggestedName || `expozi-${slugify(title) || "report"}`) + "." + ext;
+  const filterList = [
+    { name: "PDF document", extensions: ["pdf"] },
+    { name: "Word document (.docx)", extensions: ["docx"] },
+    { name: "Text document (.txt)", extensions: ["txt"] },
+    { name: "Markdown document (.md)", extensions: ["md"] },
+    { name: "CSV spreadsheet (.csv)", extensions: ["csv"] },
+  ];
+  const activeFilter = filterList.find((f) => f.extensions[0] === ext) || filterList[0];
   const { canceled, filePath } = await dialog.showSaveDialog(parentWin || undefined, {
     title: "Export",
     defaultPath: path.join(app.getPath("downloads"), name),
-    filters:
-      ext === "pdf"
-        ? [{ name: "PDF document", extensions: ["pdf"] }]
-        : ext === "csv"
-          ? [{ name: "CSV spreadsheet", extensions: ["csv"] }]
-          : [{ name: "Markdown", extensions: ["md"] }],
+    filters: [activeFilter, ...filterList.filter((f) => f !== activeFilter)],
   });
   if (canceled || !filePath) return { saved: false };
 
   const outPath = new RegExp(`\\.${ext}$`, "i").test(filePath) ? filePath : `${filePath}.${ext}`;
-  if (ext === "pdf") await writePdf({ markdown, title, outPath, meta });
-  else if (ext === "csv") {
+  if (ext === "pdf") {
+    await writePdf({ markdown, title, outPath, meta });
+  } else if (ext === "docx") {
+    await writeDocx({ markdown, title, outPath });
+  } else if (ext === "csv") {
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, String(csv || ""), "utf8");
   } else {
@@ -207,4 +277,4 @@ async function exportReport(parentWin, { format, markdown, csv, title, suggested
   return { saved: true, path: outPath };
 }
 
-module.exports = { exportReport, mdToHtml, writePdf, loadHtml, slugify };
+module.exports = { exportReport, mdToHtml, writePdf, writeDocx, loadHtml, slugify };

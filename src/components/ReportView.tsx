@@ -1,4 +1,4 @@
-import { ListOrdered, BookOpen, Copy, Check, Download, Star, FileText, FlaskConical, Maximize2, Minus, X } from "lucide-react";
+import { ListOrdered, BookOpen, Copy, Check, Download, Star, FileText, FlaskConical, Maximize2, Minus, X, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Paper } from "../data/papers";
 import type { RagToolEvent } from "../rag";
@@ -28,7 +28,7 @@ interface Props {
   streaming: boolean;
   mode: HomeMode;
   suggestions?: string[];
-  stages?: { stage: string; message: string }[];
+  stages?: { stage: string; message: string; seq?: number }[];
   toolEvents?: RagToolEvent[];
   error?: string | null;
   artifactOpen?: boolean;
@@ -40,13 +40,20 @@ interface Props {
 }
 
 export default function ReportView({ query, papers, starred, onToggleStar, onOpenPaper, onFollowUp, followUpBlocks, version, kindLabel, thinking, answer, streaming, mode, suggestions = [], stages = [], toolEvents = [], error, artifactOpen = false, onOpenArtifact, onExport, decisions = {}, onDecide, screenSaveError = null }: Props) {
-  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(mode === "agent");
+  const [traceOpen, setTraceOpen] = useState(true);
   const [copied, setCopied] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [followUpBlocks.length, thinking, streaming]);
+
+  useEffect(() => {
+    if (!streaming && (answer ?? "").length > 0) {
+      setTraceOpen(false);
+    }
+  }, [streaming, answer]);
 
   const copyAnswer = async () => {
     try {
@@ -57,6 +64,17 @@ export default function ReportView({ query, papers, starred, onToggleStar, onOpe
       /* noop */
     }
   };
+
+  const toolIcon = (t: RagToolEvent) =>
+    t.status === "running" || t.status === "progress" ? (
+      <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-teal-600" />
+    ) : t.status === "ran" ? (
+      <Check size={14} className="shrink-0 text-teal-600" />
+    ) : t.status === "skipped" ? (
+      <Minus size={14} className="shrink-0 text-gray-400" />
+    ) : (
+      <X size={14} className="shrink-0 text-red-500" />
+    );
 
   return (
     <div className="mx-auto w-full max-w-[860px] px-6 pb-10 pt-6">
@@ -77,7 +95,59 @@ export default function ReportView({ query, papers, starred, onToggleStar, onOpe
         </button>
       )}
 
-      {stages.length > 0 && (
+      {/* TOP: pipeline + tools — collapsible trace in agent mode */}
+      {mode === "agent" && (stages.length > 0 || toolEvents.length > 0) && (
+        <div className="mt-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-xs">
+          <button
+            onClick={() => setTraceOpen((o) => !o)}
+            className="flex w-full items-center justify-between text-left"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                Agent trace
+              </span>
+              {!streaming && (
+                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                  Completed
+                </span>
+              )}
+            </div>
+            {traceOpen ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+          </button>
+          {traceOpen && (
+            <div className="mt-2.5 space-y-1.5 border-t border-gray-100 pt-2.5">
+              {[
+                ...stages.map((s, i) => ({ kind: "stage" as const, key: `s-${i}`, seq: s.seq ?? -1, stage: s })),
+                ...toolEvents.map((t) => ({ kind: "tool" as const, key: `t-${t.call}`, seq: t.seq ?? -1, tool: t })),
+              ]
+                .sort((a, b) => a.seq - b.seq)
+                .map((item, idx, arr) =>
+                  item.kind === "stage" ? (
+                    <p key={item.key} className="flex items-center gap-2 text-[13px] text-gray-600">
+                      {streaming && idx === arr.length - 1 ? (
+                        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-teal-600" />
+                      ) : (
+                        <Check size={14} className="shrink-0 text-teal-600" />
+                      )}
+                      {item.stage.message}
+                    </p>
+                  ) : (
+                    <p key={item.key} className="flex items-center gap-2 text-[13px] text-gray-600">
+                      {toolIcon(item.tool)}
+                      <span className="shrink-0 font-mono text-[12px] text-gray-800">{item.tool.tool}</span>
+                      <span className="min-w-0 break-words text-gray-400">
+                        {item.tool.detail}
+                        {item.tool.status !== "running" && item.tool.ms != null ? ` · ${item.tool.ms} ms` : ""}
+                      </span>
+                    </p>
+                  ),
+                )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {mode !== "agent" && stages.length > 0 && (
         <div className="mt-3 rounded-xl border border-gray-200 bg-white px-4 py-3">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Pipeline</p>
           <div className="mt-2 space-y-1.5">
@@ -98,21 +168,13 @@ export default function ReportView({ query, papers, starred, onToggleStar, onOpe
         </div>
       )}
 
-      {toolEvents.length > 0 && (
+      {mode !== "agent" && toolEvents.length > 0 && (
         <div className="mt-3 rounded-xl border border-gray-200 bg-white px-4 py-3">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Tools</p>
           <div className="mt-2 space-y-1.5">
             {toolEvents.map((t) => (
               <p key={t.call} className="flex items-center gap-2 text-[13px] text-gray-600">
-                {t.status === "running" ? (
-                  <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-teal-600" />
-                ) : t.status === "ran" ? (
-                  <Check size={14} className="shrink-0 text-teal-600" />
-                ) : t.status === "skipped" ? (
-                  <Minus size={14} className="shrink-0 text-gray-400" />
-                ) : (
-                  <X size={14} className="shrink-0 text-red-500" />
-                )}
+                {toolIcon(t)}
                 <span className="shrink-0 font-mono text-[12px] text-gray-800">{t.tool}</span>
                 <span className="min-w-0 break-words text-gray-400">
                   {t.detail}
@@ -220,7 +282,7 @@ export default function ReportView({ query, papers, starred, onToggleStar, onOpe
       ) : streaming ? (
         <p className="mt-5 flex items-center gap-2 text-[14px] text-gray-500">
           <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-teal-600" />
-          Searching, reading and ranking sources…
+          {mode === "agent" ? "The agent is working through its steps…" : "Searching, reading and ranking sources…"}
         </p>
       ) : (
         !error && <p className="mt-5 text-[14px] text-gray-400">No answer was generated.</p>
@@ -229,53 +291,124 @@ export default function ReportView({ query, papers, starred, onToggleStar, onOpe
       {/* cited sources */}
       {papers.length > 0 && (
         <>
-          <div className="mt-4 flex items-center gap-1.5">
+          <div className="mt-6 flex items-center justify-between border-t border-gray-100 pt-5">
             <button
               onClick={() => setSourcesOpen((o) => !o)}
-              className="flex items-center gap-2 rounded-full border border-gray-300 px-4 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50"
+              className="flex items-center gap-2 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-2xs hover:bg-gray-50"
             >
-              <BookOpen size={16} />
-              View {papers.length} cited sources
+              <BookOpen size={16} className="text-teal-600" />
+              <span>Cited sources ({papers.length})</span>
+              {sourcesOpen ? <ChevronUp size={15} className="text-gray-400" /> : <ChevronDown size={15} className="text-gray-400" />}
             </button>
-            <button onClick={copyAnswer} className="rounded-full p-2.5 text-gray-500 hover:bg-gray-100" title="Copy">
-              {copied ? <Check size={17} /> : <Copy size={17} />}
-            </button>
-            <button
-              onClick={() => onExport?.("pdf")}
-              className="rounded-full p-2.5 text-gray-500 hover:bg-gray-100"
-              title="Download PDF"
-            >
-              <Download size={17} />
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button onClick={copyAnswer} className="rounded-full p-2 text-gray-500 hover:bg-gray-100" title="Copy answer">
+                {copied ? <Check size={16} className="text-teal-600" /> : <Copy size={16} />}
+              </button>
+              <button
+                onClick={() => onExport?.("pdf")}
+                className="rounded-full p-2 text-gray-500 hover:bg-gray-100"
+                title="Download PDF"
+              >
+                <Download size={16} />
+              </button>
+            </div>
           </div>
 
           {sourcesOpen && (
-            <div className="mt-3 overflow-hidden rounded-xl border border-gray-200">
-              {papers.map((p, i) => (
-                <div
-                  key={p.id}
-                  className="flex cursor-pointer items-start gap-3 border-b border-gray-100 bg-white px-4 py-3 last:border-0 hover:bg-gray-50"
-                  onClick={() => onOpenPaper(p.id)}
-                >
-                  <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-50 text-xs font-semibold text-teal-700">
-                    {i + 1}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[14px] font-medium leading-snug text-gray-900">{p.title}</p>
-                    <p className="mt-0.5 truncate text-xs text-gray-500">{metaLine(p)}</p>
-                  </div>
-                  <button
-                    data-star={p.id}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleStar(p.id);
-                    }}
-                    className={starred.has(p.id) ? "text-amber-400" : "text-gray-300 hover:text-amber-400"}
+            <div className="mt-3.5 space-y-3">
+              {papers.map((p, i) => {
+                const passageIndex = p.passageNo || i + 1;
+                const snippet = p.usedSnippet || p.summary || p.abstract;
+                return (
+                  <div
+                    key={p.id || i}
+                    className="rounded-xl border border-gray-200/90 bg-white p-4 shadow-2xs transition-all hover:border-teal-200"
                   >
-                    <Star size={16} fill={starred.has(p.id) ? "currentColor" : "none"} />
-                  </button>
-                </div>
-              ))}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-50 text-xs font-bold text-teal-700">
+                          {passageIndex}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <a
+                              href={p.url || "#"}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(e) => {
+                                if (!p.url) {
+                                  e.preventDefault();
+                                  onOpenPaper(p.id);
+                                }
+                              }}
+                              className="text-[14px] font-semibold text-gray-900 hover:text-teal-700 hover:underline inline-flex items-center gap-1.5"
+                            >
+                              {p.title}
+                              {p.url && <ExternalLink size={13} className="shrink-0 text-gray-400" />}
+                            </a>
+                          </div>
+
+                          {/* Authors · Year · Citations */}
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-gray-500">
+                            {p.authors && p.authors.length > 0 && (
+                              <span className="font-medium text-gray-700">
+                                {p.authors.slice(0, 3).join(", ")}{p.authors.length > 3 ? " et al." : ""}
+                              </span>
+                            )}
+                            {p.year && <span>· {p.year}</span>}
+                            {p.citations > 0 && <span>· Cited by {p.citations.toLocaleString()}</span>}
+                            {p.journal && p.journal !== "Source" && <span className="truncate max-w-[200px]">· {p.journal}</span>}
+                          </div>
+
+                          {/* Badges: Source badge + PDF available / Abstract only */}
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                            {p.sourceBadge && (
+                              <span className="rounded-md bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700 border border-gray-200">
+                                {p.sourceBadge}
+                              </span>
+                            )}
+                            {p.hasPdf ? (
+                              <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 border border-emerald-200">
+                                PDF available
+                              </span>
+                            ) : (
+                              <span className="rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 border border-amber-200">
+                                Abstract only
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Snippet of the passage used */}
+                          {snippet && (
+                            <div className="mt-2.5 rounded-lg bg-gray-50/80 p-2.5 text-xs text-gray-600 border border-gray-100 leading-relaxed font-sans">
+                              <span className="font-semibold text-gray-500 text-[10px] block mb-1 uppercase tracking-wider">
+                                Passage snippet
+                              </span>
+                              "{snippet}"
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <button
+                        data-star={p.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleStar(p.id);
+                        }}
+                        className={`p-1.5 rounded-lg border transition-colors shrink-0 ${
+                          starred.has(p.id)
+                            ? "border-amber-200 bg-amber-50 text-amber-500"
+                            : "border-gray-200 text-gray-300 hover:text-amber-500 hover:bg-amber-50"
+                        }`}
+                        title={starred.has(p.id) ? "In library" : "Save to library"}
+                      >
+                        <Star size={15} fill={starred.has(p.id) ? "currentColor" : "none"} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </>

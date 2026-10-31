@@ -4,6 +4,8 @@
 // - JEV rubric (`context/jev_filter.py`): 0-3 usefulness scoring, used only
 //   when the caller opts in (deep mode), since it costs an LLM call.
 
+const { rrfFuse } = require("./rrf.cjs");
+
 const SIMILARITY_FLOOR = 0.12;
 const RUBRIC = [
   "0 = unrelated to the question",
@@ -15,22 +17,24 @@ const RUBRIC = [
 // chunks: [{docIdx, text, vec}]
 // vecRanked: [{i, score}] cosine-ranked (may be empty)
 // bmRanked:  [{id, score}] BM25-ranked (may be empty)
-// Returns ordered unique chunk indices forming the evidence pool.
+// Returns ordered unique chunk indices forming the evidence pool using Reciprocal Rank Fusion.
 function selectEvidence(
   chunks,
   { vecRanked = [], bmRanked = [], maxPerDoc = 3, budgetChars = 14000, threshold = SIMILARITY_FLOOR } = {},
 ) {
   const simOf = new Map(vecRanked.map((r) => [r.i, r.score]));
-  const order = [];
-  const seen = new Set();
-  const push = (i) => {
-    if (Number.isInteger(i) && chunks[i] && !seen.has(i)) {
-      seen.add(i);
-      order.push(i);
-    }
-  };
-  vecRanked.forEach((r) => push(r.i));
-  bmRanked.forEach((r) => push(r.id));
+  let order = [];
+  if (vecRanked.length > 0 && bmRanked.length > 0) {
+    const fused = rrfFuse(
+      [bmRanked.map((r) => r.id), vecRanked.map((r) => r.i)],
+      [0.45, 0.55],
+    );
+    order = fused.map((f) => f.idx);
+  } else if (vecRanked.length > 0) {
+    order = vecRanked.map((r) => r.i);
+  } else {
+    order = bmRanked.map((r) => r.id);
+  }
 
   const perDoc = new Map();
   const out = [];

@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BookOpen } from "lucide-react";
 import Sidebar, { type HistoryItem, type NavView } from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import HomeView, { type HomeMode } from "./components/HomeView";
 import Composer from "./components/Composer";
 import ReportView, { type FollowUpItem } from "./components/ReportView";
+import ReportModeView from "./components/ReportModeView";
+import CriteriaModal from "./components/CriteriaModal";
 import ArtifactPanel from "./components/ArtifactPanel";
 import DetailPane from "./components/DetailPane";
 import LibraryView from "./components/LibraryView";
 import RoutinesView from "./components/RoutinesView";
 import AuthView from "./components/AuthView";
 import LandingView from "./components/LandingView";
-import CommandPalette, { type ExpoziSettings, SettingsModal } from "./components/CommandPalette";
+import CommandPalette from "./components/CommandPalette";
+import SettingsView, { type ExpoziSettings } from "./components/SettingsView";
 import type { ScreeningEntry } from "./components/LiteratureTable";
 import {
   ragApi,
@@ -19,6 +23,8 @@ import {
   type RagToolEvent,
   type ScreeningDecision,
   type SessionRow,
+  type ReportStepData,
+  type ScreeningCriteria,
 } from "./rag";
 import { type Paper } from "./data/papers";
 import { toPaper, reportTitle, libraryRowToPaper } from "./data/live";
@@ -65,11 +71,24 @@ export default function App() {
   const [liveSessionId, setLiveSessionId] = useState<string | null>(null);
   const [screenDecisions, setScreenDecisions] = useState<Record<string, ScreeningEntry>>({});
   const [screenSaveError, setScreenSaveError] = useState<string | null>(null);
+  const [pendingResume, setPendingResume] = useState<{
+    sessionId: string;
+    topic: string;
+    timeAgo: string;
+    query: string;
+    mode: HomeMode;
+  } | null>(null);
+  const [reportStepData, setReportStepData] = useState<ReportStepData | null>(null);
+  const [pendingCriteria, setPendingCriteria] = useState<{
+    query: string;
+    template?: string;
+    depth?: string;
+  } | null>(null);
   // History + library hydrate from the library DB (stage 4): Recents reads the
   // sessions table, stars persist in the library table.
   const [dbSessions, setDbSessions] = useState<SessionRow[]>([]);
   const [libraryPapers, setLibraryPapers] = useState<Paper[]>([]);
-  const [stages, setStages] = useState<{ stage: string; message: string }[]>([]);
+  const [stages, setStages] = useState<{ stage: string; message: string; seq?: number }[]>([]);
   const [toolEvents, setToolEvents] = useState<RagToolEvent[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
   const [artifactOpen, setArtifactOpen] = useState(false);
@@ -215,9 +234,14 @@ export default function App() {
   const selected =
     results.find((p) => p.id === selectedId) ?? libraryPapers.find((p) => p.id === selectedId) ?? null;
 
-  const submit = (q: string) => {
-    const trimmed = q.trim();
-    if (!trimmed) return;
+  const executeSearch = (
+    trimmed: string,
+    targetMode: HomeMode,
+    opts?: { template?: string; depth?: string; criteria?: ScreeningCriteria },
+  ) => {
+    setPendingResume(null);
+    setPendingCriteria(null);
+    setReportStepData(null);
     setQuery(trimmed);
     setAnswer(null);
     setStreaming(false);
@@ -235,8 +259,10 @@ export default function App() {
     setVersion(1);
     setArtifactOpen(false);
     setExportStatus(null);
-    setThreadMode(mode);
-    setThreadKind(mode === "review" ? "Systematic review" : "Report");
+    setThreadMode(targetMode);
+    setThreadKind(
+      targetMode === "review" ? "Systematic review" : targetMode === "agent" ? "Research Agent" : "Report"
+    );
     setSelectedId(null);
     setView("workspace");
     setPaletteOpen(false);
@@ -260,8 +286,52 @@ export default function App() {
     setLoading(true);
     window.setTimeout(() => {
       setLoading(false);
-      void runLiveResearch(trimmed, mode);
+      void runLiveResearch(trimmed, targetMode, opts);
     }, 500);
+  };
+
+  const submit = async (
+    q: string,
+    opts?: { template?: string; depth?: string; criteria?: ScreeningCriteria },
+  ) => {
+    const trimmed = q.trim();
+    if (!trimmed) return;
+
+    if (ragReady && window.expozi?.rag?.checkPastSession) {
+      try {
+        const mem = await ragApi.checkPastSession(trimmed);
+        if (mem && mem.shouldSuggest && (mem.similarity ?? 0) >= 0.7 && mem.sessionId) {
+          setPendingResume({
+            sessionId: mem.sessionId,
+            topic: mem.title || mem.query || trimmed,
+            timeAgo: mem.timeAgo || "earlier",
+            query: trimmed,
+            mode,
+          });
+          setQuery(trimmed);
+          setThreadMode(mode);
+          setThreadKind(
+            mode === "review" ? "Systematic review" : mode === "agent" ? "Research Agent" : "Report"
+          );
+          setView("workspace");
+          return;
+        }
+      } catch {
+        /* proceed normally */
+      }
+    }
+
+    // In Report mode, if criteria not yet confirmed, show criteria confirmation dialog (Step 2)
+    if (mode === "report" && !opts?.criteria) {
+      setPendingCriteria({
+        query: trimmed,
+        template: opts?.template,
+        depth: opts?.depth,
+      });
+      return;
+    }
+
+    executeSearch(trimmed, mode, opts);
   };
 
   const askFollowUp = (q: string) => {
@@ -274,6 +344,51 @@ export default function App() {
     setFollowUps((f) => [...f, { q: trimmed, a: "", error: null }]);
 
     if (ragReady) {
+      if (threadMode === "agent" && liveSessionId) {
+        ragApi
+          .followUp(liveSessionId, trimmed, {
+            onToken: (t) =>
+              setFollowUps((f) => {
+                const n = [...f];
+                const last = n[n.length - 1];
+                if (last && last.q === trimmed) n[n.length - 1] = { ...last, a: last.a + t };
+                return n;
+              }),
+            onTool: (ev) => {
+              setToolEvents((te) => [...te, ev]);
+            },
+          })
+          .then((res) => {
+            if (res.sources && res.sources.length > 0) {
+              setLiveSources((s) => {
+                const existing = new Set((s || []).map((x) => x.id));
+                const merged = [...(s || [])];
+                for (const src of res.sources) {
+                  const paper = toPaper(src);
+                  if (!existing.has(paper.id)) {
+                    merged.push(paper);
+                    existing.add(paper.id);
+                  }
+                }
+                return merged;
+              });
+            }
+            setVersion((v) => v + 1);
+            setThinking(null);
+          })
+          .catch((err) => {
+            const msg = String(err?.message || err || "Failed to generate answer");
+            setFollowUps((f) => {
+              const n = [...f];
+              const last = n[n.length - 1];
+              if (last && last.q === trimmed) n[n.length - 1] = { ...last, error: msg };
+              return n;
+            });
+            setThinking(null);
+          });
+        return;
+      }
+
       const prior = followUps.filter((f) => f.a && f.a.trim().length > 0);
       const messages: { role: "user" | "assistant" | "system"; content: string }[] = [
         {
@@ -426,31 +541,57 @@ export default function App() {
       .join("\n");
   }
 
-  const runLiveResearch = async (q: string, m: HomeMode) => {
+  const runLiveResearch = async (
+    q: string,
+    m: HomeMode,
+    opts?: { template?: string; depth?: string; criteria?: ScreeningCriteria },
+  ) => {
     setStreaming(true);
     let acc = "";
     try {
-      const res = await ragApi.research(q, m, {
-        onStage: (stage, message) => setStages((s) => [...s, { stage, message }]),
-        onTool: (ev) =>
-          setToolEvents((prev) => {
-            const i = prev.findIndex((e) => e.call === ev.call);
-            if (i === -1) return [...prev, ev];
-            const next = [...prev];
-            next[i] = ev;
-            return next;
-          }),
-        onToken: (t) => {
-          acc += t;
-          setAnswer((a) => (a ?? "") + t);
+      const res = await ragApi.research(
+        q,
+        m,
+        {
+          onStage: (stage, message, seq) =>
+            setStages((s) => {
+              // Same stage key again (e.g. embed progress) updates the last line
+              // in place instead of piling up duplicates in the trace.
+              const last = s[s.length - 1];
+              if (last && last.stage === stage) {
+                const next = s.slice(0, -1);
+                next.push({ stage, message, seq });
+                return next;
+              }
+              return [...s, { stage, message, seq }];
+            }),
+          onTool: (ev) =>
+            setToolEvents((prev) => {
+              const i = prev.findIndex((e) => e.call === ev.call);
+              if (i === -1) return [...prev, ev];
+              const next = [...prev];
+              next[i] = ev;
+              return next;
+            }),
+          onToken: (t) => {
+            acc += t;
+            setAnswer((a) => (a ?? "") + t);
+          },
+          onStepData: (data) => {
+            setReportStepData((prev) => ({ ...(prev || {}), ...data }));
+          },
         },
-      });
+        opts,
+      );
       const sources = res.sources;
       if (res.answer && res.answer.trim().length > 0) {
         // The pipeline can return a better-ordered final text (e.g. the
         // assembled report with abstract first) — prefer it over the stream.
         acc = res.answer;
         setAnswer(res.answer);
+      }
+      if (res.stepData) {
+        setReportStepData(res.stepData);
       }
       setLiveSources(sources.map(toPaper));
       setLiveSessionId(res.sessionId || null);
@@ -503,15 +644,18 @@ export default function App() {
       });
       const decisions: Record<string, ScreeningEntry> = {};
       for (const row of s.screening || []) decisions[row.url] = { decision: row.decision ?? null, note: row.note ?? null };
+      const targetMode = (s.mode as HomeMode) || "agent";
       setQuery(s.query);
-      setThreadMode("review");
-      setThreadKind("Systematic review");
-      setAnswer(null);
+      setThreadMode(targetMode);
+      setThreadKind(
+        targetMode === "review" ? "Systematic review" : targetMode === "agent" ? "Research Agent" : "Report"
+      );
+      setAnswer(s.answer || null);
       setStreaming(false);
       setStages([
         {
           stage: "reopen",
-          message: `Reopened saved review — ${papers.length} sources, screening decisions restored`,
+          message: `Reopened saved ${targetMode} — ${papers.length} sources restored`,
         },
       ]);
       setToolEvents([]);
@@ -526,6 +670,7 @@ export default function App() {
       setLiveSessionId(s.id);
       setScreenDecisions(decisions);
       setScreenSaveError(null);
+      setPendingResume(null);
       setView("workspace");
     } catch (e) {
       setRunError(`Could not reopen the saved session: ${String((e as Error)?.message || e)}`);
@@ -703,8 +848,8 @@ export default function App() {
           setView("home");
         }}
         onSelectHistory={(item) => {
-          if (item.sessionId && item.mode === "review") void openSession(item.sessionId);
-          else submit(item.query);
+          if (item.sessionId) void openSession(item.sessionId);
+          else void submit(item.query);
         }}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -729,62 +874,125 @@ export default function App() {
         )}
 
         {view === "workspace" && query && !loading && (
-          <div className="flex min-h-0 flex-1">
-            {/* conversation column */}
-            <div className="flex min-w-0 flex-1 flex-col">
+          threadMode === "report" ? (
+            <div className="flex min-h-0 flex-1 flex-col">
               <TopBar title={query} versions={version} onShare={share} />
-              <div className="slim-scroll min-h-0 flex-1 overflow-y-auto">
-                <ReportView
-                  query={query}
-                  papers={results}
-                  starred={starred}
-                  onToggleStar={toggleStar}
-                  onOpenPaper={setSelectedId}
-                  onFollowUp={askFollowUp}
-                  followUpBlocks={followUps}
-                  version={version}
-                  kindLabel={threadKind}
-                  thinking={thinking}
-                  answer={answer}
-                  streaming={streaming}
-                  mode={threadMode}
-                  suggestions={suggestions}
-                  stages={stages}
-                  toolEvents={toolEvents}
-                  error={runError}
-                  artifactOpen={artifactOpen}
-                  onOpenArtifact={() => setArtifactOpen(true)}
-                  onExport={(f) => void exportAnswer(f)}
-                  decisions={screenDecisions}
-                  onDecide={decideScreening}
-                  screenSaveError={screenSaveError}
-                />
-              </div>
-              <div className="shrink-0 border-t border-gray-100 bg-white px-6 py-4">
-                <div className="mx-auto w-full max-w-[860px]">
-                  <Composer
-                    onSubmit={askFollowUp}
-                    model={settings.model}
-                    thinking={thinking !== null || streaming}
-                    onStop={stopThinking}
+              <ReportModeView
+                query={query}
+                reportAnswer={answer}
+                streaming={streaming}
+                stepData={reportStepData}
+                sessionId={liveSessionId}
+                papers={results}
+                onOpenPaper={setSelectedId}
+                onRetry={() =>
+                  executeSearch(query, "report", {
+                    template: reportStepData?.template,
+                    depth: reportStepData?.depth,
+                    criteria: reportStepData?.criteria,
+                  })
+                }
+              />
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1">
+              {/* conversation column */}
+              <div className="flex min-w-0 flex-1 flex-col">
+                <TopBar title={query} versions={version} onShare={share} />
+                {pendingResume && (
+                  <div className="mx-auto w-full max-w-[860px] px-6 pt-4">
+                    <div className="flex items-center justify-between rounded-xl border border-teal-200 bg-teal-50/80 p-4 text-teal-950 shadow-xs">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-600 text-white">
+                          <BookOpen size={18} />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold">
+                            Resume previous research on "{pendingResume.topic}"?
+                          </p>
+                          <p className="text-xs text-teal-700">
+                            Found past research from {pendingResume.timeAgo}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            const sid = pendingResume.sessionId;
+                            setPendingResume(null);
+                            void openSession(sid);
+                          }}
+                          className="rounded-lg bg-teal-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-teal-700 transition-colors cursor-pointer"
+                        >
+                          Resume
+                        </button>
+                        <button
+                          onClick={() => {
+                            const { query: q, mode: m } = pendingResume;
+                            setPendingResume(null);
+                            executeSearch(q, m);
+                          }}
+                          className="rounded-lg border border-teal-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-teal-50 transition-colors cursor-pointer"
+                        >
+                          New search
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div className="slim-scroll min-h-0 flex-1 overflow-y-auto">
+                  <ReportView
+                    query={query}
+                    papers={results}
+                    starred={starred}
+                    onToggleStar={toggleStar}
+                    onOpenPaper={setSelectedId}
+                    onFollowUp={askFollowUp}
+                    followUpBlocks={followUps}
+                    version={version}
+                    kindLabel={threadKind}
+                    thinking={thinking}
+                    answer={answer}
+                    streaming={streaming}
+                    mode={threadMode}
+                    suggestions={suggestions}
+                    stages={stages}
+                    toolEvents={toolEvents}
+                    error={runError}
+                    artifactOpen={artifactOpen}
+                    onOpenArtifact={() => setArtifactOpen(true)}
+                    onExport={(f) => void exportAnswer(f)}
+                    decisions={screenDecisions}
+                    onDecide={decideScreening}
+                    screenSaveError={screenSaveError}
                   />
                 </div>
+                <div className="shrink-0 border-t border-gray-100 bg-white px-6 py-4">
+                  <div className="mx-auto w-full max-w-[860px]">
+                    <Composer
+                      onSubmit={askFollowUp}
+                      model={settings.model}
+                      thinking={thinking !== null || streaming}
+                      onStop={stopThinking}
+                    />
+                  </div>
+                </div>
               </div>
-            </div>
 
-            {/* report viewer (opens from the artifact card) */}
-            {artifactOpen && (answer ?? "").trim().length > 0 && (
-              <ArtifactPanel
-                title={reportTitle(answer ?? "", query)}
-                subtitle={`${threadKind} · V${version}`}
-                markdown={answer ?? ""}
-                exportStatus={exportStatus}
-                exporting={exporting}
-                onExport={(f) => void exportAnswer(f)}
-                onClose={() => setArtifactOpen(false)}
-              />
-            )}
-          </div>
+              {/* report viewer (opens from the artifact card) */}
+              {artifactOpen && (answer ?? "").trim().length > 0 && (
+                <ArtifactPanel
+                  title={reportTitle(answer ?? "", query)}
+                  subtitle={`${threadKind} · V${version}`}
+                  markdown={answer ?? ""}
+                  exportStatus={exportStatus}
+                  exporting={exporting}
+                  onExport={(f) => void exportAnswer(f)}
+                  onClose={() => setArtifactOpen(false)}
+                />
+              )}
+            </div>
+          )
         )}
 
         {view === "library" && (
@@ -833,7 +1041,7 @@ export default function App() {
         />
       )}
       {settingsOpen && (
-        <SettingsModal
+        <SettingsView
           settings={settings}
           onChange={updateSettings}
           onClose={() => setSettingsOpen(false)}
@@ -851,6 +1059,17 @@ export default function App() {
             }
           }}
           onLoadModel={() => void ragApi.loadModel()}
+        />
+      )}
+      {pendingCriteria && (
+        <CriteriaModal
+          query={pendingCriteria.query}
+          onConfirm={(criteria) => {
+            const { query: q, template, depth } = pendingCriteria;
+            setPendingCriteria(null);
+            executeSearch(q, "report", { template, depth, criteria });
+          }}
+          onCancel={() => setPendingCriteria(null)}
         />
       )}
     </div>

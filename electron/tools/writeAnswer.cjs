@@ -52,4 +52,32 @@ define({
   },
 });
 
+define({
+  name: "synthesize",
+  description:
+    "Write the final grounded answer from the numbered evidence passages, streamed with [1][2] citations. The agent loop assembles the evidence automatically — pass no args.",
+  input: {
+    query: "string — optional, defaults to the original task",
+    evidence: "string — numbered passages (assembled by the agent loop)",
+    maxTokens: "number",
+  },
+  async run(input, ctx) {
+    if (!input.evidence || !String(input.evidence).trim()) {
+      throw new Error("no evidence available yet — read sources and index content first");
+    }
+    const prompt = AGENT_PROMPT + "\n\nQuestion: " + input.query + "\n\nEvidence:\n" + input.evidence + AGENT_TAIL;
+    const answer = await ctx.promptFn(
+      [{ role: "user", content: prompt }],
+      input.maxTokens || 500,
+      ctx.onToken,
+    );
+    const text = String(answer || "");
+    return {
+      data: text,
+      count: null,
+      detail: `wrote the cited answer (${text.length} chars)`,
+    };
+  },
+});
+
 module.exports = { AGENT_PROMPT, REPORT_PROMPT };

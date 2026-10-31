@@ -40,7 +40,34 @@ async function promptStream(messages, { onToken, signal, maxTokens = 512, temper
         .map((m) => (m.role === "user" ? m.content : ""))
         .filter(Boolean)
         .join("\n");
-      return s.prompt(text, { onTextChunk: onToken, signal, maxTokens, temperature });
+      // TEMP-DEBUG: tracing generation timing (remove after the local-run diagnosis).
+      const t0 = Date.now();
+      console.log(`[llm:dbg] start: promptChars=${text.length} maxTokens=${maxTokens} temp=${temperature}`);
+      let chunks = 0;
+      let chars = 0;
+      const wrapped = (c) => {
+        chunks++;
+        chars += String(c || "").length;
+        if (chunks === 1 || chunks % 10 === 0) {
+          console.log(`[llm:dbg] chunk#${chunks} +${Date.now() - t0}ms chars=${chars}`);
+        }
+        if (onToken) onToken(c);
+      };
+      try {
+        const r =
+          typeof s.promptWithMeta === "function"
+            ? await (async () => {
+                const m = await s.promptWithMeta(text, { onTextChunk: wrapped, signal, maxTokens, temperature });
+                console.log(`[llm:dbg] done +${Date.now() - t0}ms stop=${m.stopReason} chunks=${chunks} outChars=${String(m.response || "").length}`);
+                return m.response;
+              })()
+            : await s.prompt(text, { onTextChunk: wrapped, signal, maxTokens, temperature });
+        if (typeof r === "string") console.log(`[llm:dbg] done +${Date.now() - t0}ms chunks=${chunks} outChars=${r.length}`);
+        return r;
+      } catch (e) {
+        console.log(`[llm:dbg] FAILED +${Date.now() - t0}ms chunks=${chunks}: ${(e && e.message) || e}`);
+        throw e;
+      }
     });
   const p = queue.then(run, run);
   queue = p.catch(() => {});
@@ -50,7 +77,18 @@ async function promptStream(messages, { onToken, signal, maxTokens = 512, temper
 async function withChatSession(fn) {
   if (!chatModel) throw new Error("No model loaded");
   const mod = await import("node-llama-cpp");
+  // TEMP-DEBUG: context sizing/timing (remove after the local-run diagnosis).
+  const tCtx = Date.now();
   const ctx = await chatModel.createContext();
+  let ctxSize = "n/a";
+  try {
+    ctxSize = String(ctx.contextSize);
+  } catch {
+    /* newer API */
+  }
+  console.log(
+    `[llm:dbg] context ready +${Date.now() - tCtx}ms size=${ctxSize} train=${chatModel.trainContextSize || "n/a"}`,
+  );
   const s = new mod.LlamaChatSession({ contextSequence: ctx.getSequence() });
   try {
     return await fn(s);

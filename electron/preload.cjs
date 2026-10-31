@@ -16,8 +16,15 @@ contextBridge.exposeInMainWorld("expozi", {
     loadModel: () => ipcRenderer.invoke("rag:load-model"),
     prompt: (messages, maxTokens) => ipcRenderer.invoke("rag:prompt", { messages, maxTokens }),
     stopPrompt: () => ipcRenderer.invoke("rag:stop-prompt"),
-    research: (query, mode, maxTokens) => ipcRenderer.invoke("rag:research", { query, mode, maxTokens }),
+    research: (query, mode, maxTokens, opts) =>
+      ipcRenderer.invoke("rag:research", { query, mode, maxTokens, ...(opts || {}) }),
     stopResearch: () => ipcRenderer.invoke("rag:stop-research"),
+    checkPastSession: (query) => ipcRenderer.invoke("rag:session-memory-check", { query }),
+    followUp: (sessionId, query, maxTokens) => ipcRenderer.invoke("rag:follow-up", { sessionId, query, maxTokens }),
+    reportQA: (sessionId, query, followUpQuery, extractionMatrix, reportText) =>
+      ipcRenderer.invoke("rag:report-qa", { sessionId, query, followUpQuery, extractionMatrix, reportText }),
+    getReportVersions: (sessionId) => ipcRenderer.invoke("rag:report-versions", { sessionId }),
+    getReportExtractions: (sessionId) => ipcRenderer.invoke("rag:report-extractions", { sessionId }),
     setScreening: (sessionId, url, decision, note) =>
       ipcRenderer.invoke("rag:screening-set", { sessionId, url, decision, note }),
     listScreening: (sessionId) => ipcRenderer.invoke("rag:screening-list", { sessionId }),
@@ -61,6 +68,11 @@ contextBridge.exposeInMainWorld("expozi", {
       const l = (_e, d) => cb(d);
       ipcRenderer.on("rag:tool", l);
       return () => ipcRenderer.removeListener("rag:tool", l);
+    },
+    onReportStepData: (cb) => {
+      const l = (_e, d) => cb(d);
+      ipcRenderer.on("rag:report-step-data", l);
+      return () => ipcRenderer.removeListener("rag:report-step-data", l);
     },
   },
 });

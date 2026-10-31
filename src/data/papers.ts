@@ -18,4 +18,9 @@ export interface Paper {
   retracted?: boolean;
   suggested?: string | null;
   suggestReason?: string | null;
+  sourceBadge?: string;
+  hasPdf?: boolean;
+  isAbstractOnly?: boolean;
+  usedSnippet?: string;
+  passageNo?: number;
 }

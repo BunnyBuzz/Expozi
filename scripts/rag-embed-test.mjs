@@ -3,13 +3,16 @@ import os from "os";
 import path from "path";
 
 const require = createRequire(import.meta.url);
-const appData = path.join(os.homedir(), "AppData", "Roaming", "expozi");
+const { ragDirs } = require("../electron/rag/paths.cjs");
+// Resolve storage exactly like the app (honours the optional rag-location.json).
+const appData = path.join(os.homedir(), "AppData", "Roaming");
+const dirs = ragDirs({ getPath: (k) => (k === "appData" ? appData : path.join(appData, "expozi")) });
 const db = require("../electron/rag/db.cjs");
 const { loadEmbeddingModel } = require("../electron/rag/embed.cjs");
 const { createEmbedder } = require("../electron/rag/embedder.cjs");
 const { kvSet } = require("../electron/rag/keys.cjs");
 
-await db.openDb(path.join(appData, "rag", "data", "expozi.sqlite"));
+await db.openDb(dirs.dbFile);
 // ONNX (multilingual-e5-small) is the local embedder; the GGUF fallback file
 // is optional and may not be installed — null keeps this on the ONNX path.
 await loadEmbeddingModel(null);

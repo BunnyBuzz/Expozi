@@ -495,4 +495,4 @@ async function runResearch({
   return runV2({ ...args, depth });
 }
 
-module.exports = { runResearch, AGENT_PROMPT, REPORT_PROMPT };
+module.exports = { runResearch, runV2, AGENT_PROMPT, REPORT_PROMPT };

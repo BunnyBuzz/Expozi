@@ -158,11 +158,17 @@ function registerRagIpc() {
   ipcMain.handle("rag:research", async (e, payload) => {
     const id = Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
     const sender = e.sender;
+    // One shared sequence over stages + tool events so the renderer can merge
+    // them into a single chronological trace (agent mode).
+    const seq = { n: 0 };
     rag
       .runResearch({
         query: payload.query,
         mode: payload.mode,
         maxTokens: payload.maxTokens,
+        template: payload.template,
+        depth: payload.depth,
+        criteria: payload.criteria,
         send: (ch, data) => {
           try {
             sender.send(ch, data);
@@ -176,7 +182,7 @@ function registerRagIpc() {
             console.log("[rag:stage]", stage, "-", message, `(rss ${rss} MB)`);
           }
           try {
-            sender.send("rag:progress", { id, stage, message });
+            sender.send("rag:progress", { id, stage, message, seq: seq.n++ });
           } catch {
             /* noop */
           }
@@ -193,7 +199,7 @@ function registerRagIpc() {
             console.log("[rag:tool]", event.tool, event.status, event.detail || "");
           }
           try {
-            sender.send("rag:tool", { id, event });
+            sender.send("rag:tool", { id, event: { ...event, seq: seq.n++ } });
           } catch {
             /* noop */
           }
@@ -207,6 +213,7 @@ function registerRagIpc() {
             text: result.answer,
             sources: result.sources,
             sessionId: result.sessionId || null,
+            stepData: result.stepData || null,
           });
         } catch {
           /* noop */
@@ -226,6 +233,67 @@ function registerRagIpc() {
     rag.stopResearch();
     return { stopped: true };
   });
+  ipcMain.handle("rag:session-memory-check", async (_e, payload) => rag.checkPastSession((payload || {}).query));
+  ipcMain.handle("rag:follow-up", async (e, payload) => {
+    const p = payload || {};
+    const id = p.id || randomUUID();
+    const sender = e.sender;
+    const seq = { n: 1 };
+    rag.runAgentFollowUp({
+      sessionId: p.sessionId,
+      query: p.query,
+      maxTokens: p.maxTokens,
+      onToken: (token) => {
+        try { sender.send("rag:token", { id, token }); } catch {}
+      },
+      onTool: (event) => {
+        try { sender.send("rag:tool", { id, event: { ...event, seq: seq.n++ } }); } catch {}
+      },
+      send: (ch, data) => {
+        try { sender.send(ch, data); } catch {}
+      },
+    })
+      .then((result) => {
+        try {
+          sender.send("rag:done", {
+            id,
+            text: result.answer,
+            sources: result.sources || [],
+            sessionId: result.sessionId,
+          });
+        } catch {}
+      })
+      .catch((err) => {
+        try {
+          sender.send("rag:done", { id, error: String((err && err.message) || err) });
+        } catch {}
+      });
+    return { id };
+  });
+  ipcMain.handle("rag:report-qa", async (e, payload) => {
+    const p = payload || {};
+    const id = p.id || randomUUID();
+    const sender = e.sender;
+    rag.runReportQA({
+      sessionId: p.sessionId,
+      query: p.query,
+      followUpQuery: p.followUpQuery,
+      extractionMatrix: p.extractionMatrix,
+      reportText: p.reportText,
+      onToken: (token) => {
+        try { sender.send("rag:token", { id, token }); } catch {}
+      },
+    })
+      .then((answer) => {
+        try { sender.send("rag:done", { id, text: answer }); } catch {}
+      })
+      .catch((err) => {
+        try { sender.send("rag:done", { id, error: String((err && err.message) || err) }); } catch {}
+      });
+    return { id };
+  });
+  ipcMain.handle("rag:report-versions", async (_e, payload) => rag.getReportVersions((payload || {}).sessionId));
+  ipcMain.handle("rag:report-extractions", async (_e, payload) => rag.getReportExtractions((payload || {}).sessionId));
   // Screening workspace (stage 3): decisions persist per (session, url); a
   // saved session can be reopened from Recents without re-running.
   ipcMain.handle("rag:screening-set", (_e, payload) => rag.setScreening(payload || {}));

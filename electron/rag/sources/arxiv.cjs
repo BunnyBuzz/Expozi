@@ -45,16 +45,21 @@ async function searchArxiv(query, limit = 10) {
       const absId = String(e.id || "").split("/abs/")[1] || "";
       const year = e.published ? Number(String(e.published).slice(0, 4)) || null : null;
       const title = String(e.title).replace(/\s+/g, " ");
+      const abstract = String(e.summary || "").replace(/\s+/g, " ").trim();
       return {
+        id: e.id || (absId ? `https://arxiv.org/abs/${absId}` : null) || String(Math.random()),
         title,
         authors: au.map((a) => a.name).filter(Boolean),
         year,
         journal: "arXiv",
         citations: 0,
+        citationCount: 0,
         url: e.id || null,
         doi: e["arxiv:doi"] || null,
-        abstract: String(e.summary || "").replace(/\s+/g, " "),
+        abstract,
+        snippet: abstract,
         pdfUrl: absId ? `https://arxiv.org/pdf/${absId}` : null,
+        source: "arXiv",
         provenance: "arxiv",
         studyType: typeFromTitle(title) || "preprint",
       };

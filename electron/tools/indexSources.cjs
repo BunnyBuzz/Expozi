@@ -30,6 +30,64 @@ function persistPassages(sessionId, withText, capped) {
   }
 }
 
+async function indexContent(input, ctx) {
+  if (ctx.onStage) ctx.onStage("embed", "Indexing the sources…");
+  throwIfAborted(ctx.signal);
+  const withText = input.withText || (ctx.state && ctx.state.withText) || [];
+  const query = input.query || (ctx.state && ctx.state.query) || "";
+  const capped = [];
+  withText.forEach((x, di) => {
+    chunkText(x.text).forEach((c, ci) => capped.push({ docIdx: di, chunkIdx: ci, text: c }));
+  });
+  const limited = capped.slice(0, 250);
+
+  const bm = buildIndex(limited.map((c) => c.text));
+  const bmRanked = searchIndex(bm, query, 40);
+
+  let vecRanked = [];
+  const embedder = await createEmbedder({
+    onProgress: (done, total, note) => {
+      if (ctx.onStage) ctx.onStage("embed", note || `Indexing the sources… ${done}/${total}`);
+      if (ctx.progress) ctx.progress(`${done}/${total} embedded…`);
+    },
+    shouldStop: () => !!(ctx.signal && ctx.signal.aborted),
+  });
+  if (embedder.available) {
+    try {
+      const qv = (await embedder.embedQuery([query]))[0];
+      const vecs = await embedder.embedPassages(limited.map((c) => c.text));
+      limited.forEach((c, i) => {
+        c.vec = vecs[i];
+      });
+      throwIfAborted(ctx.signal);
+      if (qv) vecRanked = searchVector(qv, vecs, limited.length);
+    } catch (e) {
+      if (isAbortError(e)) throw e;
+      vecRanked = [];
+    }
+  }
+
+  persistPassages(input.sessionId, withText, limited);
+
+  const embedded = limited.filter((c) => c.vec).length;
+  const label =
+    embedder.source === "api"
+      ? "API"
+      : embedder.localKind === "onnx"
+        ? `ONNX ${embedder.localModelLabel || ""}`.trim()
+        : embedder.localKind === "gguf"
+          ? "GGUF model"
+          : "";
+  const embedNote = embedder.available
+    ? `${embedded}/${limited.length} embedded${label ? ` · ${label}` : ""}`
+    : "embeddings unavailable";
+  return {
+    data: { capped: limited, bmRanked, vecRanked, embedder },
+    count: limited.length,
+    detail: `${limited.length} passages · ${embedNote}`,
+  };
+}
+
 define({
   name: "index_sources",
   description:
@@ -39,58 +97,21 @@ define({
     query: "string",
     withText: "[{ doc, text }] — output of read_pages",
   },
-  async run(input, ctx) {
-    if (ctx.onStage) ctx.onStage("embed", "Indexing the sources…");
-    throwIfAborted(ctx.signal);
-    const withText = input.withText || [];
-    const capped = [];
-    withText.forEach((x, di) => {
-      chunkText(x.text).forEach((c, ci) => capped.push({ docIdx: di, chunkIdx: ci, text: c }));
-    });
-    const limited = capped.slice(0, 250);
+  run(input, ctx) {
+    return indexContent(input, ctx);
+  },
+});
 
-    const bm = buildIndex(limited.map((c) => c.text));
-    const bmRanked = searchIndex(bm, input.query, 40);
-
-    let vecRanked = [];
-    const embedder = await createEmbedder({
-      onProgress: (done, total, note) =>
-        ctx.onStage && ctx.onStage("embed", note || `Indexing the sources… ${done}/${total}`),
-      shouldStop: () => !!(ctx.signal && ctx.signal.aborted),
-    });
-    if (embedder.available) {
-      try {
-        const qv = (await embedder.embedQuery([input.query]))[0];
-        const vecs = await embedder.embedPassages(limited.map((c) => c.text));
-        limited.forEach((c, i) => {
-          c.vec = vecs[i];
-        });
-        throwIfAborted(ctx.signal);
-        if (qv) vecRanked = searchVector(qv, vecs, limited.length);
-      } catch (e) {
-        if (isAbortError(e)) throw e;
-        vecRanked = [];
-      }
-    }
-
-    persistPassages(input.sessionId, withText, limited);
-
-    const embedded = limited.filter((c) => c.vec).length;
-    const label =
-      embedder.source === "api"
-        ? "API"
-        : embedder.localKind === "onnx"
-          ? `ONNX ${embedder.localModelLabel || ""}`.trim()
-          : embedder.localKind === "gguf"
-            ? "GGUF model"
-            : "";
-    const embedNote = embedder.available
-      ? `${embedded}/${limited.length} embedded${label ? ` · ${label}` : ""}`
-      : "embeddings unavailable";
-    return {
-      data: { capped: limited, bmRanked, vecRanked, embedder },
-      count: limited.length,
-      detail: `${limited.length} passages · ${embedNote}`,
-    };
+define({
+  name: "index_content",
+  description:
+    "Index everything read so far (chunk → BM25 → embeddings → ranked against the question). The agent loop passes the read sources automatically; live progress is reported while chunks are embedded.",
+  input: {
+    sessionId: "string",
+    query: "string — optional, defaults to the original task",
+    withText: "[{ doc, text }] — optional, defaults to the sources read this run",
+  },
+  run(input, ctx) {
+    return indexContent(input, ctx);
   },
 });

@@ -1,6 +1,10 @@
 const { searchArxiv } = require("./arxiv.cjs");
 const { searchPubmed } = require("./pubmed.cjs");
+const { searchOpenAlex } = require("./openalex.cjs");
+const { searchCrossref } = require("./crossref.cjs");
+const { searchLibrary } = require("./library.cjs");
 const { searchWebDetailed } = require("./webSearch.cjs");
+const { attachOpenAccessPdfs } = require("./unpaywall.cjs");
 
 function normUrl(u) {
   try {
@@ -15,21 +19,31 @@ function normUrl(u) {
 }
 
 // One query -> every source, with a per-source status breakdown.
-// PubMed + arXiv always; the web (DuckDuckGo, browser-backed) is a marked
-// supplement capped below the scholarly sources. Its tier outcomes
-// (duckduckgo / builtin-browser / searxng) are reported individually —
-// a failed tier is never a silent zero.
+// Primary scholarly: OpenAlex (multi-disciplinary), PubMed (biomedical),
+// arXiv (CS/physics/math), Crossref (publishers & journal DOIs).
+// Supplement: web (DuckDuckGo scraper, browser-backed, SearXNG pool).
+// All legal open-access PDFs are resolved via Unpaywall.
 async function searchQueryDetailed(query, perSource = 8, opts = {}) {
   const n =
     typeof perSource === "number"
-      ? { arxiv: perSource, pubmed: perSource, web: Math.min(6, perSource) }
+      ? {
+          openalex: perSource,
+          pubmed: perSource,
+          arxiv: perSource,
+          crossref: Math.min(6, perSource),
+          web: Math.min(6, perSource),
+        }
       : perSource || {};
+
   const webLimit =
     opts.web === 0 ? 0 : typeof opts.web === "number" ? opts.web : n.web == null ? 6 : n.web;
 
   const jobs = [
-    { name: "arxiv", fn: () => searchArxiv(query, n.arxiv == null ? 8 : n.arxiv) },
+    { name: "library", fn: () => searchLibrary(query, 5) },
+    { name: "openalex", fn: () => searchOpenAlex(query, n.openalex == null ? 8 : n.openalex) },
     { name: "pubmed", fn: () => searchPubmed(query, n.pubmed == null ? 8 : n.pubmed) },
+    { name: "arxiv", fn: () => searchArxiv(query, n.arxiv == null ? 8 : n.arxiv) },
+    { name: "crossref", fn: () => searchCrossref(query, n.crossref == null ? 6 : n.crossref) },
   ];
   if (webLimit > 0) jobs.push({ name: "web", fn: () => searchWebDetailed(query, webLimit) });
 
@@ -63,6 +77,14 @@ async function searchQueryDetailed(query, perSource = 8, opts = {}) {
       });
     }
   });
+
+  // Automatically attach free legal open-access PDFs via Unpaywall
+  try {
+    await attachOpenAccessPdfs(docs);
+  } catch {
+    /* best-effort */
+  }
+
   return { docs, parts };
 }
 
@@ -129,12 +151,12 @@ async function searchMany(queries, cap = 60, opts = {}) {
   return res.docs;
 }
 
-// Fair mixing across sources for reading priority: scholarly first (PubMed,
-// then arXiv), web results last. Without this, whichever API returns first
+// Fair mixing across sources for reading priority: scholarly first (Library, OpenAlex, PubMed,
+// arXiv, Crossref), web results last. Without this, whichever API returns first
 // consumes every fetch slot and the other sources never reach the reader.
 // Within each source bucket the strongest documents (quality score: study
 // type + recency + citations) are read first.
-function interleaveByProvenance(docs, order = ["pubmed", "arxiv", "web"]) {
+function interleaveByProvenance(docs, order = ["library", "openalex", "pubmed", "arxiv", "crossref", "web"]) {
   const buckets = new Map(order.map((k) => [k, []]));
   const other = [];
   for (const d of docs) {

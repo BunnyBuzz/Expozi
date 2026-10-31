@@ -22,6 +22,9 @@ allowed.
    write_section + assemble_report
 
 ## SEARCH SOURCES
+- OpenAlex API — https://api.openalex.org/works (multi-disciplinary direct search: 250M+ works covering social sciences, economics, humanities, physics, engineering, and biology. Reconstructs abstracts from inverted indexes, extracts OA pdf links, citation counts, and study types)
+- Crossref API — https://api.crossref.org/works (polite pool with user-agent, covers DOIs from all major publishers and journals globally)
+- Unpaywall API — https://api.unpaywall.org/v2/{doi} (automatically discovers legal open-access PDFs for peer-reviewed papers)
 - arXiv API — https://export.arxiv.org/api/query (tokenized: stopwords dropped,
   terms ANDed — a raw question otherwise degrades into matching "How"/"does")
 - PubMed — esearch + efetch eutils endpoints (the term is sanitized first:
@@ -126,8 +129,10 @@ src/ — React renderer (App.tsx, components/, data/, rag.ts bridge)
 dist/ — built renderer (vite), release/ — electron-builder output
 
 ## DATABASE (sql.js)
-File: `<userData>/rag/data/expozi.sqlite` — loaded with sql.js, saved after
-writes. Tables:
+File: `<rag root>/data/expozi.sqlite` — loaded with sql.js, saved after
+writes. The rag root is `<userData>/rag` by default, or the folder set in
+`%APPDATA%\expozi\rag-location.json` (`{ "ragDir": "D:\\Expozi\\data" }`);
+it holds `models/`, `data/` and `embed-cache/`. Tables:
 - sessions(id, query, mode, answer, created_at)
 - sources(id, session_id, title, url, authors, year, journal, doi, citations,
   source_type, abstract, study_type, quality, retracted, UNIQUE(session_id,url))
@@ -155,7 +160,7 @@ rag:sessions-list, rag:library-list, rag:library-add, rag:library-remove
 ## MODELS
 - Chat: a local GGUF model via node-llama-cpp (downloaded once into the models
   folder from Settings, or imported), or an API backend (OpenAI-compatible /
-  Gemini) when a key is configured.
+  Groq / Gemini) when a key is configured.
 - Embeddings: ONNX multilingual-e5-small (384-dim, q8, 100+ languages) via
   @huggingface/transformers — the fast local default (queries "query: ",
   passages "passage: "); API embeddings when configured; an optional GGUF

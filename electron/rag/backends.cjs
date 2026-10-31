@@ -210,6 +210,8 @@ async function embedComplete({ backend, baseURL, key, model, texts }) {
 async function chatComplete({ backend, baseURL, key, model, messages, maxTokens, temperature, onToken, signal }) {  switch (backend) {
     case "openai":
       return chatOpenAICompatible({ baseURL: "https://api.openai.com/v1", key, model, messages, maxTokens, temperature, onToken, signal });
+    case "groq":
+      return chatOpenAICompatible({ baseURL: "https://api.groq.com/openai/v1", key, model: model || "openai/gpt-oss-120b", messages, maxTokens, temperature, onToken, signal });
     case "openrouter":
       return chatOpenAICompatible({ baseURL: "https://openrouter.ai/api/v1", key, model: model || "openai/gpt-4o-mini", messages, maxTokens, temperature, onToken, signal });
     case "ollama":

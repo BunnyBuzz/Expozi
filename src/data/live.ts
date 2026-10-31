@@ -41,6 +41,11 @@ export function toPaper(s: RagSource): Paper {
     retracted: !!s.retracted,
     suggested: s.suggested ?? null,
     suggestReason: s.suggestReason ?? null,
+    sourceBadge: s.source || (s.provenance ? PROVENANCE_LABEL[s.provenance] ?? s.provenance : "Scholarly"),
+    hasPdf: s.hasPdf !== undefined ? s.hasPdf : !!s.pdfUrl,
+    isAbstractOnly: s.isAbstractOnly !== undefined ? s.isAbstractOnly : !s.pdfUrl,
+    usedSnippet: s.usedSnippet || abstract.slice(0, 260),
+    passageNo: s.passageNo,
   };
 }
 

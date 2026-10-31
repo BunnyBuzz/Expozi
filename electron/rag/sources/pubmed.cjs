@@ -72,15 +72,19 @@ function parseArticle(a) {
     .map(textOf)
     .filter(Boolean);
   return {
+    id: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
     title: title || "(untitled)",
     authors,
     year,
     journal,
     citations: 0,
+    citationCount: 0,
     url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
     doi,
     abstract,
+    snippet: abstract,
     pdfUrl: null,
+    source: "PubMed",
     provenance: "pubmed",
     studyTypes,
     studyType: typeFromPubmedTypes(studyTypes) || typeFromTitle(title) || "other",

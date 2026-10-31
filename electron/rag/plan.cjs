@@ -173,6 +173,38 @@ async function genQuestions(promptFn, query, perspectives, asked = [], cardsText
   return [];
 }
 
+// Review the results of the first search round and propose follow-up queries
+// that fill the coverage gaps (round 2 of the search → refine → search loop).
+async function refineQuestions(promptFn, query, cardsText, asked = [], n = 3) {
+  const askedText = asked.length ? asked.map((q) => `- ${q}`).join("\n") : "(none)";
+  try {
+    const raw = await promptFn(
+      [
+        {
+          role: "user",
+          content:
+            `You are reviewing the first search round for the task: "${query}".\n` +
+            (cardsText ? `What the search found so far:\n${cardsText}\n\n` : "") +
+            `Queries already searched:\n${askedText}\n\n` +
+            `Identify up to ${n} coverage gaps (aspects, populations, methods or outcomes that the results barely cover) ` +
+            "and write one new search query per gap.\n" +
+            "Rules: plain natural-language phrases; no search operators (site:, OR, quotes); " +
+            "must not repeat an already-searched query; must stay on the topic of the task.\n" +
+            `Return ONLY a JSON array of ${n} strings.`,
+        },
+      ],
+      300,
+    );
+    const list = parseList(raw, n + 2).filter((q) => q.length > 6).slice(0, n);
+    return dedupeQuestions(list, asked);
+  } catch (err) {
+    if (err && String(err.message || err).match(/HTTP|API|401|403|404|unauthorized|invalid key|not found/i)) {
+      throw err;
+    }
+  }
+  return [];
+}
+
 module.exports = {
   DEFAULT_PERSPECTIVE,
   extractJsonArray,
@@ -182,4 +214,5 @@ module.exports = {
   planQueries,
   genPerspectives,
   genQuestions,
+  refineQuestions,
 };
