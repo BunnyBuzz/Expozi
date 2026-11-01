@@ -1,6 +1,3 @@
-<img width="1920" height="1014" alt="image" src="https://github.com/user-attachments/assets/a7abd100-77ee-40fb-8fc6-b870cb95a567" />
-<img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/4f4315d5-462e-4a30-8637-fd9479c6f37a" />
-
 <div align="center">
   <h1>OpenElicit</h1>
   <p>Open-source AI research assistant for students and researchers — runs locally on your machine.</p>
@@ -9,6 +6,10 @@
   ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)
   ![License](https://img.shields.io/badge/license-MIT-green)
 </div>
+
+<img width="1898" height="985" alt="image" src="https://github.com/user-attachments/assets/71de8035-b11b-4edd-a8f0-eecbcf49d053" />
+<img width="1900" height="977" alt="image" src="https://github.com/user-attachments/assets/461094d7-4d29-44ec-8911-a5131f8b1a47" />
+
 
 ---
 
